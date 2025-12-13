@@ -287,13 +287,14 @@ sudo cp -L /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf" 2>/dev/null || \
 # Install KDE Plasma and SDDM
 # Use --releasever=43 to ensure Fedora repos work even if os-release was modified
 echo "  - Installing plasma-desktop, sddm, konsole, dolphin..."
+echo "    (This may take 10-20 minutes, showing progress...)"
 sudo chroot "$ROOTFS_DIR" dnf install -y --releasever=43 --allowerasing \
     plasma-desktop plasma-workspace sddm sddm-kcm \
     konsole dolphin kate ark gwenview okular spectacle \
     plasma-nm plasma-pa bluedevil powerdevil kscreen \
     kwin breeze-gtk breeze-icon-theme \
     NetworkManager-wifi NetworkManager-bluetooth \
-    2>&1 | tail -50 || echo "Warning: Some packages may have failed"
+    || echo "Warning: Some packages may have failed"
 
 # Remove GNOME packages to save space and avoid conflicts
 echo "  - Removing GNOME packages..."
