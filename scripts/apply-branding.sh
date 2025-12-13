@@ -96,6 +96,63 @@ if [ -d "$BRANDING_DIR/grub/arxisos" ]; then
     sudo mkdir -p "$WORK_DIR/new_iso/boot/grub2/themes/arxisos"
     sudo cp -r "$BRANDING_DIR/grub/arxisos/"* "$WORK_DIR/new_iso/boot/grub2/themes/arxisos/"
     echo "  - GRUB theme copied to ISO"
+
+    # Convert PNG files to GRUB-compatible format (24-bit RGB, no alpha channel)
+    # GRUB has issues with 32-bit RGBA PNGs - causes garbled display
+    echo "  - Converting PNG files to GRUB-compatible format..."
+    if command -v convert &> /dev/null; then
+        for THEME_DIR in "$WORK_DIR/new_iso/EFI/BOOT/themes/arxisos" "$WORK_DIR/new_iso/boot/grub2/themes/arxisos"; do
+            find "$THEME_DIR" -name "*.png" -type f | while read -r png_file; do
+                # Convert to 24-bit RGB (remove alpha channel, flatten to black background for transparency)
+                sudo convert "$png_file" -background black -alpha remove -alpha off -depth 8 "$png_file.tmp" 2>/dev/null && \
+                    sudo mv "$png_file.tmp" "$png_file" || \
+                    sudo rm -f "$png_file.tmp"
+            done
+        done
+        echo "    PNG files converted to 24-bit RGB"
+    else
+        echo "    Warning: ImageMagick not found, PNG files may cause display issues"
+    fi
+
+    # Generate GRUB font files for ISO boot
+    echo "  - Generating GRUB fonts for ISO theme..."
+    GRUB_MKFONT=""
+    if command -v grub2-mkfont &> /dev/null; then
+        GRUB_MKFONT="grub2-mkfont"
+    elif command -v grub-mkfont &> /dev/null; then
+        GRUB_MKFONT="grub-mkfont"
+    fi
+
+    if [ -n "$GRUB_MKFONT" ]; then
+        DEJAVU_REGULAR=$(find /usr/share/fonts -name "DejaVuSans.ttf" 2>/dev/null | head -1)
+        DEJAVU_BOLD=$(find /usr/share/fonts -name "DejaVuSans-Bold.ttf" 2>/dev/null | head -1)
+        DEJAVU_MONO=$(find /usr/share/fonts -name "DejaVuSansMono.ttf" 2>/dev/null | head -1)
+
+        # Generate fonts for both EFI and BIOS theme directories
+        for THEME_DIR in "$WORK_DIR/new_iso/EFI/BOOT/themes/arxisos" "$WORK_DIR/new_iso/boot/grub2/themes/arxisos"; do
+            if [ -n "$DEJAVU_REGULAR" ]; then
+                sudo $GRUB_MKFONT -s 11 -o "$THEME_DIR/dejavu_sans_11.pf2" "$DEJAVU_REGULAR" 2>/dev/null || true
+                sudo $GRUB_MKFONT -s 16 -o "$THEME_DIR/dejavu_sans_16.pf2" "$DEJAVU_REGULAR" 2>/dev/null || true
+            fi
+            if [ -n "$DEJAVU_BOLD" ]; then
+                sudo $GRUB_MKFONT -s 16 -o "$THEME_DIR/dejavu_sans_bold_16.pf2" "$DEJAVU_BOLD" 2>/dev/null || true
+                sudo $GRUB_MKFONT -s 24 -o "$THEME_DIR/dejavu_sans_bold_24.pf2" "$DEJAVU_BOLD" 2>/dev/null || true
+            fi
+            if [ -n "$DEJAVU_MONO" ]; then
+                sudo $GRUB_MKFONT -s 14 -o "$THEME_DIR/dejavu_mono_14.pf2" "$DEJAVU_MONO" 2>/dev/null || true
+            fi
+        done
+        echo "    Font files generated for ISO"
+    fi
+
+    # Copy unicode.pf2 as fallback
+    for THEME_DIR in "$WORK_DIR/new_iso/EFI/BOOT/themes/arxisos" "$WORK_DIR/new_iso/boot/grub2/themes/arxisos"; do
+        if [ -f /usr/share/grub/unicode.pf2 ]; then
+            sudo cp /usr/share/grub/unicode.pf2 "$THEME_DIR/" 2>/dev/null || true
+        elif [ -f /boot/grub2/fonts/unicode.pf2 ]; then
+            sudo cp /boot/grub2/fonts/unicode.pf2 "$THEME_DIR/" 2>/dev/null || true
+        fi
+    done
 fi
 
 # Fix EFI GRUB config
@@ -111,16 +168,37 @@ if [ -f "$WORK_DIR/new_iso/EFI/BOOT/grub.cfg" ]; then
         -e "s/--class fedora/--class arxisos/g" \
         "$WORK_DIR/new_iso/EFI/BOOT/grub.cfg"
 
+    # Add selinux=0 to kernel boot parameters to disable SELinux completely
+    sudo sed -i \
+        -e '/^\s*linux/s/$/ selinux=0/' \
+        -e '/^\s*linuxefi/s/$/ selinux=0/' \
+        "$WORK_DIR/new_iso/EFI/BOOT/grub.cfg"
+
     # Add GRUB theme configuration at the beginning of the file
     if ! grep -q "set theme=" "$WORK_DIR/new_iso/EFI/BOOT/grub.cfg"; then
         # Create temp file with theme config prepended
         # Use ($root) to reference the boot device (ISO filesystem)
         {
-            echo '# ArxisOS GRUB Theme'
+            echo '# ArxisOS GRUB Theme Configuration'
+            echo 'insmod all_video'
             echo 'insmod gfxterm'
+            echo 'insmod gfxmenu'
             echo 'insmod png'
             echo 'set gfxmode=auto'
+            echo 'set gfxpayload=keep'
             echo 'terminal_output gfxterm'
+            echo ''
+            echo '# Load fonts for theme'
+            echo 'if [ -f ($root)/EFI/BOOT/themes/arxisos/dejavu_sans_16.pf2 ]; then'
+            echo '    loadfont ($root)/EFI/BOOT/themes/arxisos/dejavu_sans_11.pf2'
+            echo '    loadfont ($root)/EFI/BOOT/themes/arxisos/dejavu_sans_16.pf2'
+            echo '    loadfont ($root)/EFI/BOOT/themes/arxisos/dejavu_sans_bold_16.pf2'
+            echo '    loadfont ($root)/EFI/BOOT/themes/arxisos/dejavu_sans_bold_24.pf2'
+            echo '    loadfont ($root)/EFI/BOOT/themes/arxisos/dejavu_mono_14.pf2'
+            echo 'elif [ -f ($root)/EFI/BOOT/themes/arxisos/unicode.pf2 ]; then'
+            echo '    loadfont ($root)/EFI/BOOT/themes/arxisos/unicode.pf2'
+            echo 'fi'
+            echo ''
             echo 'set theme=($root)/EFI/BOOT/themes/arxisos/theme.txt'
             echo 'export theme'
             echo ''
@@ -143,14 +221,37 @@ if [ -f "$WORK_DIR/new_iso/boot/grub2/grub.cfg" ]; then
         -e "s/--class fedora/--class arxisos/g" \
         "$WORK_DIR/new_iso/boot/grub2/grub.cfg"
 
+    # Add selinux=0 to kernel boot parameters to disable SELinux completely
+    sudo sed -i \
+        -e '/^\s*linux/s/$/ selinux=0/' \
+        -e '/^\s*linuxefi/s/$/ selinux=0/' \
+        "$WORK_DIR/new_iso/boot/grub2/grub.cfg"
+
     # Add GRUB theme configuration for BIOS boot
     if ! grep -q "set theme=" "$WORK_DIR/new_iso/boot/grub2/grub.cfg"; then
         {
-            echo '# ArxisOS GRUB Theme'
+            echo '# ArxisOS GRUB Theme Configuration'
+            echo 'insmod all_video'
             echo 'insmod gfxterm'
+            echo 'insmod gfxmenu'
             echo 'insmod png'
             echo 'set gfxmode=auto'
+            echo 'set gfxpayload=keep'
             echo 'terminal_output gfxterm'
+            echo ''
+            echo '# Load fonts for theme'
+            echo 'if [ -f ($root)/boot/grub2/themes/arxisos/dejavu_sans_16.pf2 ]; then'
+            echo '    loadfont ($root)/boot/grub2/themes/arxisos/dejavu_sans_11.pf2'
+            echo '    loadfont ($root)/boot/grub2/themes/arxisos/dejavu_sans_16.pf2'
+            echo '    loadfont ($root)/boot/grub2/themes/arxisos/dejavu_sans_bold_16.pf2'
+            echo '    loadfont ($root)/boot/grub2/themes/arxisos/dejavu_sans_bold_24.pf2'
+            echo '    loadfont ($root)/boot/grub2/themes/arxisos/dejavu_mono_14.pf2'
+            echo 'elif [ -f ($root)/boot/grub2/themes/arxisos/unicode.pf2 ]; then'
+            echo '    loadfont ($root)/boot/grub2/themes/arxisos/unicode.pf2'
+            echo 'elif [ -f ($root)/boot/grub2/fonts/unicode.pf2 ]; then'
+            echo '    loadfont ($root)/boot/grub2/fonts/unicode.pf2'
+            echo 'fi'
+            echo ''
             echo 'set theme=($root)/boot/grub2/themes/arxisos/theme.txt'
             echo 'export theme'
             echo ''
@@ -296,6 +397,14 @@ sudo chroot "$ROOTFS_DIR" dnf install -y --releasever=43 --allowerasing \
     NetworkManager-wifi NetworkManager-bluetooth \
     || echo "Warning: Some packages may have failed"
 
+# Install bootloader packages - CRITICAL for Anaconda to install GRUB on target disk
+echo "  - Installing bootloader packages (grub2-efi, shim, efibootmgr)..."
+sudo chroot "$ROOTFS_DIR" dnf install -y --releasever=43 \
+    grub2-efi-x64 grub2-efi-x64-modules shim-x64 \
+    grub2-tools grub2-tools-extra efibootmgr grub2-common \
+    kernel kernel-modules kernel-modules-extra \
+    || echo "Warning: Some bootloader packages may have failed"
+
 # Remove GNOME packages to save space and avoid conflicts
 echo "  - Removing GNOME packages..."
 sudo chroot "$ROOTFS_DIR" dnf remove -y --releasever=43 --noautoremove \
@@ -315,6 +424,60 @@ sudo chroot "$ROOTFS_DIR" systemctl enable sddm.service 2>/dev/null || true
 # Create display-manager symlink
 sudo rm -f "$ROOTFS_DIR/etc/systemd/system/display-manager.service"
 sudo ln -sf /usr/lib/systemd/system/sddm.service "$ROOTFS_DIR/etc/systemd/system/display-manager.service"
+
+# ============================================
+# CREATE LIVE USER FOR LIVE SESSION
+# ============================================
+echo "  - Creating liveuser for live session..."
+
+# Create liveuser account if it doesn't exist
+if ! sudo chroot "$ROOTFS_DIR" id liveuser &>/dev/null; then
+    sudo chroot "$ROOTFS_DIR" useradd -m -G wheel -s /bin/bash liveuser 2>/dev/null || true
+    # Set empty password for live user (allows passwordless login)
+    sudo chroot "$ROOTFS_DIR" passwd -d liveuser 2>/dev/null || true
+fi
+
+# Create home directory structure for liveuser
+sudo mkdir -p "$ROOTFS_DIR/home/liveuser/.config"
+sudo mkdir -p "$ROOTFS_DIR/home/liveuser/Desktop"
+
+# Copy skel to liveuser's home
+if [ -d "$ROOTFS_DIR/etc/skel" ]; then
+    sudo cp -r "$ROOTFS_DIR/etc/skel/." "$ROOTFS_DIR/home/liveuser/" 2>/dev/null || true
+fi
+
+# Set ownership
+sudo chroot "$ROOTFS_DIR" chown -R liveuser:liveuser /home/liveuser 2>/dev/null || true
+
+# Configure sudoers for passwordless sudo (live environment)
+echo "liveuser ALL=(ALL) NOPASSWD: ALL" | sudo tee "$ROOTFS_DIR/etc/sudoers.d/liveuser" > /dev/null
+sudo chmod 440 "$ROOTFS_DIR/etc/sudoers.d/liveuser"
+
+# Create systemd service to ensure liveuser exists on boot and has proper configs
+sudo tee "$ROOTFS_DIR/etc/systemd/system/liveuser-setup.service" > /dev/null << 'LIVEUSER_SERVICE'
+[Unit]
+Description=Setup Live User with Plasma configuration
+Before=display-manager.service sddm.service
+After=systemd-user-sessions.service local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '\
+    id liveuser || useradd -m -G wheel liveuser; \
+    passwd -d liveuser; \
+    mkdir -p /home/liveuser/Desktop; \
+    if [ -d /etc/skel/.config ]; then \
+        cp -rn /etc/skel/. /home/liveuser/ 2>/dev/null || true; \
+    fi; \
+    chown -R liveuser:liveuser /home/liveuser'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+LIVEUSER_SERVICE
+
+sudo chroot "$ROOTFS_DIR" systemctl enable liveuser-setup.service 2>/dev/null || true
+# ============================================
 
 # Unmount bind mounts
 sudo umount "$ROOTFS_DIR/run" 2>/dev/null || true
@@ -368,22 +531,104 @@ if [ -d "$BRANDING_DIR/grub/arxisos" ]; then
     sudo mkdir -p "$ROOTFS_DIR/boot/grub2/themes/arxisos"
     sudo cp -r "$BRANDING_DIR/grub/arxisos/"* "$ROOTFS_DIR/boot/grub2/themes/arxisos/"
 
+    # Generate GRUB font files (.pf2) from system fonts
+    echo "  - Generating GRUB fonts for theme..."
+    GRUB_MKFONT=""
+    if command -v grub2-mkfont &> /dev/null; then
+        GRUB_MKFONT="grub2-mkfont"
+    elif command -v grub-mkfont &> /dev/null; then
+        GRUB_MKFONT="grub-mkfont"
+    fi
+
+    if [ -n "$GRUB_MKFONT" ]; then
+        # Find DejaVu Sans font
+        DEJAVU_REGULAR=$(find /usr/share/fonts -name "DejaVuSans.ttf" 2>/dev/null | head -1)
+        DEJAVU_BOLD=$(find /usr/share/fonts -name "DejaVuSans-Bold.ttf" 2>/dev/null | head -1)
+        DEJAVU_MONO=$(find /usr/share/fonts -name "DejaVuSansMono.ttf" 2>/dev/null | head -1)
+
+        # Generate fonts at various sizes needed by theme
+        if [ -n "$DEJAVU_REGULAR" ]; then
+            sudo $GRUB_MKFONT -s 11 -o "$ROOTFS_DIR/boot/grub2/themes/arxisos/dejavu_sans_11.pf2" "$DEJAVU_REGULAR" 2>/dev/null || true
+            sudo $GRUB_MKFONT -s 16 -o "$ROOTFS_DIR/boot/grub2/themes/arxisos/dejavu_sans_16.pf2" "$DEJAVU_REGULAR" 2>/dev/null || true
+        fi
+        if [ -n "$DEJAVU_BOLD" ]; then
+            sudo $GRUB_MKFONT -s 16 -o "$ROOTFS_DIR/boot/grub2/themes/arxisos/dejavu_sans_bold_16.pf2" "$DEJAVU_BOLD" 2>/dev/null || true
+            sudo $GRUB_MKFONT -s 24 -o "$ROOTFS_DIR/boot/grub2/themes/arxisos/dejavu_sans_bold_24.pf2" "$DEJAVU_BOLD" 2>/dev/null || true
+        fi
+        if [ -n "$DEJAVU_MONO" ]; then
+            sudo $GRUB_MKFONT -s 14 -o "$ROOTFS_DIR/boot/grub2/themes/arxisos/dejavu_mono_14.pf2" "$DEJAVU_MONO" 2>/dev/null || true
+        fi
+        echo "    Font files generated"
+    else
+        echo "    Warning: grub2-mkfont not found, using fallback fonts"
+    fi
+
+    # Copy unicode.pf2 as fallback
+    if [ -f /usr/share/grub/unicode.pf2 ]; then
+        sudo cp /usr/share/grub/unicode.pf2 "$ROOTFS_DIR/boot/grub2/themes/arxisos/" 2>/dev/null || true
+    elif [ -f /boot/grub2/fonts/unicode.pf2 ]; then
+        sudo cp /boot/grub2/fonts/unicode.pf2 "$ROOTFS_DIR/boot/grub2/themes/arxisos/" 2>/dev/null || true
+    fi
+
     # Enable GRUB theme in configuration
-    echo "  - Enabling GRUB theme"
+    echo "  - Enabling GRUB theme and ArxisOS branding"
     sudo mkdir -p "$ROOTFS_DIR/etc/default"
     if [ -f "$ROOTFS_DIR/etc/default/grub" ]; then
-        # Remove any existing GRUB_THEME line
+        # Remove any existing lines we're going to set
         sudo sed -i '/^GRUB_THEME=/d' "$ROOTFS_DIR/etc/default/grub"
+        sudo sed -i '/^GRUB_DISTRIBUTOR=/d' "$ROOTFS_DIR/etc/default/grub"
+        sudo sed -i '/^GRUB_DISABLE_OS_PROBER=/d' "$ROOTFS_DIR/etc/default/grub"
     fi
-    # Add GRUB_THEME configuration
-    echo 'GRUB_THEME="/boot/grub2/themes/arxisos/theme.txt"' | sudo tee -a "$ROOTFS_DIR/etc/default/grub" > /dev/null
+    # Add GRUB configuration for ArxisOS
+    sudo tee -a "$ROOTFS_DIR/etc/default/grub" > /dev/null << 'GRUB_DEFAULT_EOF'
+
+# ArxisOS GRUB Configuration
+GRUB_THEME="/boot/grub2/themes/arxisos/theme.txt"
+GRUB_DISTRIBUTOR="ArxisOS"
+# Disable os-prober to prevent duplicate entries from live media
+GRUB_DISABLE_OS_PROBER=true
+GRUB_DEFAULT_EOF
+
+    # Also create a kernel post-install hook to regenerate grub.cfg
+    echo "  - Creating kernel post-install hook for GRUB"
+    sudo mkdir -p "$ROOTFS_DIR/etc/kernel/postinst.d"
+    sudo tee "$ROOTFS_DIR/etc/kernel/postinst.d/99-update-grub-arxisos" > /dev/null << 'KERNEL_HOOK_EOF'
+#!/bin/bash
+# Regenerate GRUB config after kernel installation
+# This ensures ArxisOS branding is preserved
+if [ -x /usr/sbin/grub2-mkconfig ]; then
+    /usr/sbin/grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
+fi
+if [ -d /boot/efi/EFI/fedora ] && [ -x /usr/sbin/grub2-mkconfig ]; then
+    /usr/sbin/grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true
+fi
+KERNEL_HOOK_EOF
+    sudo chmod +x "$ROOTFS_DIR/etc/kernel/postinst.d/99-update-grub-arxisos"
 fi
 
-# Copy SDDM theme
-if [ -d "$BRANDING_DIR/sddm/arxisos" ]; then
-    echo "  - SDDM theme"
+# Copy SDDM theme - prefer new Plasma 6 compatible ArxisOS-SDDM theme
+SDDM_THEME_SOURCE=""
+if [ -d "$BUILD_DIR/PLASMA-CONFIGS/ArxisOS-SDDM" ]; then
+    SDDM_THEME_SOURCE="$BUILD_DIR/PLASMA-CONFIGS/ArxisOS-SDDM"
+    echo "  - SDDM theme (Plasma 6 version from PLASMA-CONFIGS)"
+elif [ -d "$BRANDING_DIR/sddm/arxisos" ]; then
+    SDDM_THEME_SOURCE="$BRANDING_DIR/sddm/arxisos"
+    echo "  - SDDM theme (fallback from branding)"
+fi
+
+if [ -n "$SDDM_THEME_SOURCE" ]; then
     sudo mkdir -p "$ROOTFS_DIR/usr/share/sddm/themes/arxisos"
-    sudo cp -r "$BRANDING_DIR/sddm/arxisos/"* "$ROOTFS_DIR/usr/share/sddm/themes/arxisos/"
+    sudo cp -r "$SDDM_THEME_SOURCE/"* "$ROOTFS_DIR/usr/share/sddm/themes/arxisos/"
+
+    # Set ArxisOS logo as default user avatar/face icon
+    if [ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]; then
+        echo "  - Setting ArxisOS logo as default user avatar"
+        sudo mkdir -p "$ROOTFS_DIR/usr/share/sddm/themes/arxisos/faces"
+        sudo cp "$BRANDING_DIR/logos/arxisos-logo.png" "$ROOTFS_DIR/usr/share/sddm/themes/arxisos/faces/.face.icon"
+        # Also set as default face for all users
+        sudo mkdir -p "$ROOTFS_DIR/usr/share/sddm/faces"
+        sudo cp "$BRANDING_DIR/logos/arxisos-logo.png" "$ROOTFS_DIR/usr/share/sddm/faces/.face.icon"
+    fi
 fi
 
 # Copy wallpapers
@@ -443,6 +688,142 @@ if [ -d "$BRANDING_DIR/plasma-themes/PurPurNight-Splash-6" ]; then
     sudo cp -r "$BRANDING_DIR/plasma-themes/PurPurNight-Splash-6" "$ROOTFS_DIR/usr/share/plasma/look-and-feel/"
 fi
 
+# Copy PurPurNight color scheme system-wide
+echo "  - Installing PurPurNight color scheme"
+sudo mkdir -p "$ROOTFS_DIR/usr/share/color-schemes"
+sudo tee "$ROOTFS_DIR/usr/share/color-schemes/PurPurNightColorscheme.colors" > /dev/null << 'COLORSCHEME_EOF'
+[ColorEffects:Disabled]
+Color=56,56,56
+ColorAmount=0
+ColorEffect=0
+ContrastAmount=0.65
+ContrastEffect=1
+IntensityAmount=0.1
+IntensityEffect=2
+
+[ColorEffects:Inactive]
+ChangeSelectionColor=true
+Color=112,111,110
+ColorAmount=0.025
+ColorEffect=2
+ContrastAmount=0.1
+ContrastEffect=2
+Enable=false
+IntensityAmount=0
+IntensityEffect=0
+
+[Colors:Button]
+BackgroundAlternate=22,22,47
+BackgroundNormal=25,25,54
+DecorationFocus=91,78,157
+DecorationHover=96,85,170
+ForegroundActive=85,85,255
+ForegroundInactive=139,145,157
+ForegroundLink=142,142,213
+ForegroundNegative=200,55,113
+ForegroundNeutral=104,91,182
+ForegroundNormal=211,218,227
+ForegroundPositive=0,170,127
+ForegroundVisited=136,136,204
+
+[Colors:Complementary]
+BackgroundAlternate=22,22,47
+BackgroundNormal=22,22,47
+DecorationFocus=91,78,157
+DecorationHover=96,85,170
+ForegroundActive=85,85,255
+ForegroundInactive=176,182,189
+ForegroundLink=120,120,180
+ForegroundNegative=200,55,113
+ForegroundNeutral=109,85,170
+ForegroundNormal=211,218,227
+ForegroundPositive=0,170,127
+ForegroundVisited=136,136,204
+
+[Colors:Header]
+BackgroundAlternate=22,22,47
+
+[Colors:Selection]
+BackgroundAlternate=29,153,243
+BackgroundNormal=91,78,157
+DecorationFocus=91,78,157
+DecorationHover=96,85,170
+ForegroundActive=85,85,255
+ForegroundInactive=158,163,170
+ForegroundLink=142,142,213
+ForegroundNegative=200,55,113
+ForegroundNeutral=104,91,182
+ForegroundNormal=255,255,255
+ForegroundPositive=0,170,127
+ForegroundVisited=136,136,204
+
+[Colors:Tooltip]
+BackgroundAlternate=22,22,47
+BackgroundNormal=22,22,47
+DecorationFocus=91,78,157
+DecorationHover=96,85,170
+ForegroundActive=85,85,255
+ForegroundInactive=139,145,157
+ForegroundLink=142,142,213
+ForegroundNegative=200,55,113
+ForegroundNeutral=104,91,182
+ForegroundNormal=211,218,227
+ForegroundPositive=0,170,127
+ForegroundVisited=136,136,204
+
+[Colors:View]
+BackgroundAlternate=22,22,47
+BackgroundNormal=19,19,40
+DecorationFocus=91,78,157
+DecorationHover=96,85,170
+ForegroundActive=85,85,255
+ForegroundInactive=139,145,157
+ForegroundLink=142,142,213
+ForegroundNegative=200,55,113
+ForegroundNeutral=104,91,182
+ForegroundNormal=211,218,227
+ForegroundPositive=0,170,127
+ForegroundVisited=136,136,204
+
+[Colors:Window]
+BackgroundAlternate=22,22,47
+BackgroundNormal=22,22,47
+DecorationFocus=91,78,157
+DecorationHover=96,85,170
+ForegroundActive=85,85,255
+ForegroundInactive=139,145,157
+ForegroundLink=142,142,213
+ForegroundNegative=200,55,113
+ForegroundNeutral=104,91,182
+ForegroundNormal=211,218,227
+ForegroundPositive=0,170,127
+ForegroundVisited=136,136,204
+
+[General]
+ColorScheme=PurPurNightColorscheme
+Name=PurPurNight-Colorscheme
+shadeSortColumn=true
+
+[KDE]
+contrast=4
+
+[WM]
+activeBackground=22,22,47
+activeBlend=22,22,47
+activeForeground=211,218,227
+inactiveBackground=22,22,47
+inactiveBlend=22,22,47
+inactiveForeground=141,147,159
+COLORSCHEME_EOF
+
+# Copy PurPurNight-Plasma desktop theme if available in PLASMA-CONFIGS
+PLASMA_THEME_SRC="$BUILD_DIR/PLASMA-CONFIGS/Archive-local-share/plasma/desktoptheme/PurPurNight-Plasma"
+if [ -d "$PLASMA_THEME_SRC" ]; then
+    echo "  - PurPurNight Plasma desktop theme"
+    sudo mkdir -p "$ROOTFS_DIR/usr/share/plasma/desktoptheme"
+    sudo cp -r "$PLASMA_THEME_SRC" "$ROOTFS_DIR/usr/share/plasma/desktoptheme/"
+fi
+
 # Copy Aurorae window decoration theme
 if [ -d "$BRANDING_DIR/aurorae/PurPurNight-Blur-Aurorae-6" ]; then
     echo "  - PurPurNight Aurorae window decoration"
@@ -451,11 +832,43 @@ if [ -d "$BRANDING_DIR/aurorae/PurPurNight-Blur-Aurorae-6" ]; then
 fi
 
 # Copy skel (default user configuration)
-if [ -d "$BRANDING_DIR/skel" ]; then
-    echo "  - User skeleton configuration"
-    sudo cp -r "$BRANDING_DIR/skel/." "$ROOTFS_DIR/etc/skel/"
+# The Skel directory is in BUILD_DIR/Skel (note: capital S)
+SKEL_DIR="$BUILD_DIR/Skel"
+if [ -d "$SKEL_DIR" ]; then
+    echo "  - User skeleton configuration from $SKEL_DIR"
+    sudo cp -r "$SKEL_DIR/." "$ROOTFS_DIR/etc/skel/"
     # Ensure .local/bin is executable
     sudo chmod +x "$ROOTFS_DIR/etc/skel/.local/bin/"* 2>/dev/null || true
+
+    # NOTE: Keeping minimal plasma config files for top panel position and wallpaper
+    # The configs are now minimal - just panel location=3 (top) and wallpaper path
+    echo "  - Keeping minimal plasma configs (top panel, wallpaper)"
+
+    # IMPORTANT: Also copy to liveuser's home since it was created before this step
+    if [ -d "$ROOTFS_DIR/home/liveuser" ]; then
+        echo "  - Copying skel to liveuser home"
+        sudo cp -r "$SKEL_DIR/." "$ROOTFS_DIR/home/liveuser/"
+        # Remove plasma panel configs from liveuser too
+        sudo rm -f "$ROOTFS_DIR/home/liveuser/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
+        sudo rm -f "$ROOTFS_DIR/home/liveuser/.config/plasmashellrc" 2>/dev/null || true
+        sudo chroot "$ROOTFS_DIR" chown -R liveuser:liveuser /home/liveuser 2>/dev/null || true
+    fi
+elif [ -d "$BRANDING_DIR/skel" ]; then
+    # Fallback to branding/skel if it exists
+    echo "  - User skeleton configuration from $BRANDING_DIR/skel"
+    sudo cp -r "$BRANDING_DIR/skel/." "$ROOTFS_DIR/etc/skel/"
+    sudo chmod +x "$ROOTFS_DIR/etc/skel/.local/bin/"* 2>/dev/null || true
+    # Remove plasma panel configs
+    sudo rm -f "$ROOTFS_DIR/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
+    sudo rm -f "$ROOTFS_DIR/etc/skel/.config/plasmashellrc" 2>/dev/null || true
+
+    if [ -d "$ROOTFS_DIR/home/liveuser" ]; then
+        echo "  - Copying skel to liveuser home"
+        sudo cp -r "$BRANDING_DIR/skel/." "$ROOTFS_DIR/home/liveuser/"
+        sudo rm -f "$ROOTFS_DIR/home/liveuser/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
+        sudo rm -f "$ROOTFS_DIR/home/liveuser/.config/plasmashellrc" 2>/dev/null || true
+        sudo chroot "$ROOTFS_DIR" chown -R liveuser:liveuser /home/liveuser 2>/dev/null || true
+    fi
 fi
 
 # Update icon cache
@@ -464,19 +877,43 @@ sudo chroot "$ROOTFS_DIR" gtk-update-icon-cache -f /usr/share/icons/Vivid-Glassy
 sudo chroot "$ROOTFS_DIR" gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 
 # Configure SDDM to use the theme and Plasma session
+# IMPORTANT: Autologin is set up ONLY for live session via separate service
 echo "  - SDDM configuration"
 sudo mkdir -p "$ROOTFS_DIR/etc/sddm.conf.d"
+
+# Base SDDM config (theme, session) - NO autologin here
 sudo tee "$ROOTFS_DIR/etc/sddm.conf.d/arxisos.conf" > /dev/null << 'SDDM_EOF'
 [Theme]
 Current=arxisos
 CursorTheme=oreo_white_cursors
 
-[Autologin]
-Session=plasma
-
 [General]
 DefaultSession=plasma.desktop
+
+[X11]
+ServerArguments=-nolisten tcp
 SDDM_EOF
+
+# Create systemd service to enable autologin ONLY in live session
+# Live sessions have /run/initramfs/live present
+echo "  - Creating live-session autologin service"
+sudo tee "$ROOTFS_DIR/etc/systemd/system/sddm-live-autologin.service" > /dev/null << 'LIVE_AUTOLOGIN_EOF'
+[Unit]
+Description=Enable SDDM autologin for live session only
+Before=sddm.service display-manager.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'if [ -d /run/initramfs/live ] || grep -q "root=live:" /proc/cmdline 2>/dev/null; then echo "[Autologin]"; echo "User=liveuser"; echo "Session=plasma"; echo "Relogin=false"; fi > /etc/sddm.conf.d/live-autologin.conf'
+ExecStop=/bin/rm -f /etc/sddm.conf.d/live-autologin.conf
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+LIVE_AUTOLOGIN_EOF
+
+sudo chroot "$ROOTFS_DIR" systemctl enable sddm-live-autologin.service 2>/dev/null || true
 
 # Set Plasma as default session and SDDM as display manager
 echo "  - Setting Plasma as default session"
@@ -498,12 +935,12 @@ ACCOUNTSEOF
 done
 
 # Configure GDM custom.conf to use Plasma if GDM is used
+# NOTE: GDM autologin is handled by the live-session service
 echo "  - Configuring GDM for Plasma session"
 sudo mkdir -p "$ROOTFS_DIR/etc/gdm"
 sudo tee "$ROOTFS_DIR/etc/gdm/custom.conf" > /dev/null << 'GDMCONF'
 [daemon]
-AutomaticLoginEnable=True
-AutomaticLogin=liveuser
+AutomaticLoginEnable=False
 DefaultSession=plasma.desktop
 
 [security]
@@ -530,11 +967,43 @@ exec startplasma-x11
 XSESSION
 sudo chmod +x "$ROOTFS_DIR/etc/X11/xinit/Xsession" 2>/dev/null || true
 
-# Create default session symlink
+# Create default session symlinks and ensure Plasma is default
+echo "  - Setting Plasma as default session"
 sudo mkdir -p "$ROOTFS_DIR/usr/share/xsessions"
+sudo mkdir -p "$ROOTFS_DIR/usr/share/wayland-sessions"
+
+# For X11 sessions
 if [ -f "$ROOTFS_DIR/usr/share/xsessions/plasma.desktop" ]; then
     sudo ln -sf plasma.desktop "$ROOTFS_DIR/usr/share/xsessions/default.desktop" 2>/dev/null || true
 fi
+
+# For Wayland sessions (Plasma 6 uses plasmawayland by default)
+if [ -f "$ROOTFS_DIR/usr/share/wayland-sessions/plasma.desktop" ]; then
+    sudo ln -sf plasma.desktop "$ROOTFS_DIR/usr/share/wayland-sessions/default.desktop" 2>/dev/null || true
+fi
+
+# Set default session in accountsservice for all users
+sudo mkdir -p "$ROOTFS_DIR/var/lib/AccountsService/users"
+# Default template for new users to use Plasma
+sudo tee "$ROOTFS_DIR/var/lib/AccountsService/users/liveuser" > /dev/null << 'ACCT_EOF'
+[User]
+Session=plasma
+XSession=plasma
+Icon=/usr/share/sddm/faces/.face.icon
+ACCT_EOF
+
+# Hide GNOME sessions from SDDM to prevent accidental selection
+# (Comment out rather than delete in case user wants them later)
+for gnome_session in gnome gnome-xorg gnome-classic gnome-classic-xorg; do
+    if [ -f "$ROOTFS_DIR/usr/share/xsessions/${gnome_session}.desktop" ]; then
+        sudo sed -i 's/^NoDisplay=.*/NoDisplay=true/' "$ROOTFS_DIR/usr/share/xsessions/${gnome_session}.desktop" 2>/dev/null || \
+        echo "NoDisplay=true" | sudo tee -a "$ROOTFS_DIR/usr/share/xsessions/${gnome_session}.desktop" > /dev/null
+    fi
+    if [ -f "$ROOTFS_DIR/usr/share/wayland-sessions/${gnome_session}.desktop" ]; then
+        sudo sed -i 's/^NoDisplay=.*/NoDisplay=true/' "$ROOTFS_DIR/usr/share/wayland-sessions/${gnome_session}.desktop" 2>/dev/null || \
+        echo "NoDisplay=true" | sudo tee -a "$ROOTFS_DIR/usr/share/wayland-sessions/${gnome_session}.desktop" > /dev/null
+    fi
+done
 
 # Disable GNOME initial setup / Welcome to Fedora
 echo "  - Disabling GNOME initial setup"
@@ -642,20 +1111,76 @@ DISTRIB_DESCRIPTION="ArxisOS 1.0 (Plasma)"
 DISTRIB_DEVELOPER="Brad Heffernan"
 EOF
 
+# Create first-boot service to finalize GRUB configuration after installation
+# This ensures any duplicate entries from the live media are removed
+echo "  - Creating first-boot GRUB cleanup service"
+sudo tee "$ROOTFS_DIR/etc/systemd/system/arxisos-first-boot.service" > /dev/null << 'FIRSTBOOT_EOF'
+[Unit]
+Description=ArxisOS First Boot Setup
+After=local-fs.target network.target
+ConditionPathExists=!/var/lib/arxisos-first-boot-done
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '\
+    # Only run on installed system (not live) \
+    if [ ! -d /run/initramfs/live ] && ! grep -q "root=live:" /proc/cmdline 2>/dev/null; then \
+        # Regenerate GRUB config \
+        grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true; \
+        if [ -d /boot/efi/EFI/fedora ]; then \
+            grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true; \
+        fi; \
+        # Remove liveuser account (only on installed system) \
+        if id liveuser &>/dev/null; then \
+            userdel -r liveuser 2>/dev/null || true; \
+            rm -f /etc/sudoers.d/liveuser 2>/dev/null || true; \
+            rm -f /var/lib/AccountsService/users/liveuser 2>/dev/null || true; \
+        fi; \
+        # Set default avatar for all users without one \
+        for user_home in /home/*; do \
+            username=$(basename "$user_home"); \
+            if [ -d "$user_home" ] && [ "$username" != "liveuser" ]; then \
+                if [ ! -f "$user_home/.face.icon" ]; then \
+                    cp /usr/share/sddm/faces/.face.icon "$user_home/.face.icon" 2>/dev/null || true; \
+                    chown "$username:$username" "$user_home/.face.icon" 2>/dev/null || true; \
+                fi; \
+                # Set Plasma as default session for all users \
+                mkdir -p /var/lib/AccountsService/users; \
+                if [ ! -f "/var/lib/AccountsService/users/$username" ]; then \
+                    echo "[User]" > "/var/lib/AccountsService/users/$username"; \
+                    echo "Session=plasma" >> "/var/lib/AccountsService/users/$username"; \
+                    echo "XSession=plasma" >> "/var/lib/AccountsService/users/$username"; \
+                    echo "Icon=$user_home/.face.icon" >> "/var/lib/AccountsService/users/$username"; \
+                fi; \
+            fi; \
+        done; \
+    fi'
+ExecStartPost=/bin/touch /var/lib/arxisos-first-boot-done
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+FIRSTBOOT_EOF
+
+sudo chroot "$ROOTFS_DIR" systemctl enable arxisos-first-boot.service 2>/dev/null || true
+
 # IMPORTANT: Set dnf releasever so package updates work after installation
 # This overrides the os-release VERSION_ID for dnf purposes only
 echo "  - Setting dnf releasever for Fedora 43 repos"
 sudo mkdir -p "$ROOTFS_DIR/etc/dnf/vars"
 echo "43" | sudo tee "$ROOTFS_DIR/etc/dnf/vars/releasever" > /dev/null
 
-# Fix SELinux - set to permissive to avoid boot issues from modified files
-echo "  - Configuring SELinux for live environment"
+# Fix SELinux - DISABLE for live environment to avoid boot delays
+# The autorelabel process takes too long and blocks desktop loading
+echo "  - Disabling SELinux for live environment"
 if [ -f "$ROOTFS_DIR/etc/selinux/config" ]; then
-    sudo sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' "$ROOTFS_DIR/etc/selinux/config"
-    sudo sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' "$ROOTFS_DIR/etc/sysconfig/selinux" 2>/dev/null || true
+    sudo sed -i 's/^SELINUX=enforcing/SELINUX=disabled/' "$ROOTFS_DIR/etc/selinux/config"
+    sudo sed -i 's/^SELINUX=permissive/SELINUX=disabled/' "$ROOTFS_DIR/etc/selinux/config"
+    sudo sed -i 's/^SELINUX=enforcing/SELINUX=disabled/' "$ROOTFS_DIR/etc/sysconfig/selinux" 2>/dev/null || true
+    sudo sed -i 's/^SELINUX=permissive/SELINUX=disabled/' "$ROOTFS_DIR/etc/sysconfig/selinux" 2>/dev/null || true
 fi
-# Also create autorelabel flag for first boot after install
-sudo touch "$ROOTFS_DIR/.autorelabel"
+# Remove autorelabel flag - we don't want relabeling on live boot
+sudo rm -f "$ROOTFS_DIR/.autorelabel"
 
 # Unmount rootfs if it was mounted
 echo "Repackaging..."
@@ -670,6 +1195,77 @@ sudo mksquashfs "$WORK_DIR/squashfs" "$WORK_DIR/new_iso/LiveOS/squashfs.img" -co
 
 # Unmount original ISO
 sudo umount "$WORK_DIR/iso"
+
+# ============================================
+# SETUP BIOS GRUB THEMING
+# ============================================
+echo "Setting up BIOS GRUB theming..."
+
+if [ -f "$WORK_DIR/new_iso/images/eltorito.img" ]; then
+    # Copy GRUB fonts for BIOS boot
+    echo "  - Copying GRUB fonts..."
+    sudo mkdir -p "$WORK_DIR/new_iso/boot/grub2/fonts"
+    if [ -f /usr/share/grub/unicode.pf2 ]; then
+        sudo cp /usr/share/grub/unicode.pf2 "$WORK_DIR/new_iso/boot/grub2/fonts/"
+    elif [ -f /boot/grub2/fonts/unicode.pf2 ]; then
+        sudo cp /boot/grub2/fonts/unicode.pf2 "$WORK_DIR/new_iso/boot/grub2/fonts/"
+    fi
+
+    # Copy i386-pc GRUB modules to ISO for runtime loading
+    echo "  - Copying GRUB modules for BIOS..."
+    sudo mkdir -p "$WORK_DIR/new_iso/boot/grub2/i386-pc"
+    GRUB_I386_DIR=""
+    if [ -d /usr/lib/grub/i386-pc ]; then
+        GRUB_I386_DIR="/usr/lib/grub/i386-pc"
+    elif [ -d /usr/share/grub2/i386-pc ]; then
+        GRUB_I386_DIR="/usr/share/grub2/i386-pc"
+    fi
+
+    if [ -n "$GRUB_I386_DIR" ]; then
+        sudo cp "$GRUB_I386_DIR"/*.mod "$WORK_DIR/new_iso/boot/grub2/i386-pc/" 2>/dev/null || true
+        sudo cp "$GRUB_I386_DIR"/*.lst "$WORK_DIR/new_iso/boot/grub2/i386-pc/" 2>/dev/null || true
+
+        # Rebuild eltorito.img with proper El Torito format (cdboot.img + core.img)
+        if [ -f "$GRUB_I386_DIR/cdboot.img" ]; then
+            echo "  - Rebuilding eltorito.img with graphics support..."
+
+            # Modules to embed in the core image
+            GRUB_MODULES="iso9660 biosdisk search search_label configfile normal boot linux echo part_gpt part_msdos fat ext2 all_video gfxterm gfxmenu png"
+
+            # Create core.img
+            GRUB_MKIMAGE=""
+            if command -v grub2-mkimage &> /dev/null; then
+                GRUB_MKIMAGE="grub2-mkimage"
+            elif command -v grub-mkimage &> /dev/null; then
+                GRUB_MKIMAGE="grub-mkimage"
+            fi
+
+            if [ -n "$GRUB_MKIMAGE" ]; then
+                # Create the core image
+                sudo $GRUB_MKIMAGE \
+                    -O i386-pc \
+                    -o "$WORK_DIR/core.img" \
+                    -p /boot/grub2 \
+                    $GRUB_MODULES \
+                    2>/dev/null
+
+                if [ -f "$WORK_DIR/core.img" ]; then
+                    # Combine cdboot.img + core.img to create proper El Torito image
+                    sudo cat "$GRUB_I386_DIR/cdboot.img" "$WORK_DIR/core.img" > "$WORK_DIR/new_iso/images/eltorito.img"
+                    sudo rm -f "$WORK_DIR/core.img"
+                    echo "    El Torito boot image rebuilt with graphics modules"
+                else
+                    echo "    Warning: Failed to create core.img, keeping original eltorito.img"
+                fi
+            else
+                echo "    Warning: grub2-mkimage not found, keeping original eltorito.img"
+            fi
+        else
+            echo "    Warning: cdboot.img not found, keeping original eltorito.img"
+        fi
+    fi
+fi
+# ============================================
 
 # Create new ISO
 echo "Creating new ISO with volume label: $ISO_LABEL"

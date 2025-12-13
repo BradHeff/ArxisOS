@@ -4,7 +4,7 @@
 title-text: ""
 desktop-image: "background.png"
 desktop-color: "#0d1117"
-terminal-font: "DejaVu Sans Mono Regular 14"
+terminal-font: "dejavu_mono_14"
 terminal-box: "terminal_box_*.png"
 terminal-left: "0"
 terminal-top: "0"
@@ -26,7 +26,7 @@ terminal-border: "0"
     width = 200
     height = 40
     text = "ArxisOS"
-    font = "DejaVu Sans Bold 24"
+    font = "dejavu_sans_bold_24"
     color = "#ffffff"
     align = "left"
 }
@@ -37,9 +37,9 @@ terminal-border: "0"
     top = 30%
     width = 35%
     height = 45%
-    item_font = "DejaVu Sans Regular 16"
+    item_font = "dejavu_sans_16"
     item_color = "#8b949e"
-    selected_item_font = "DejaVu Sans Bold 16"
+    selected_item_font = "dejavu_sans_bold_16"
     selected_item_color = "#ffffff"
     selected_item_pixmap_style = "select_*.png"
     item_height = 36
@@ -57,7 +57,7 @@ terminal-border: "0"
     width = 300
     height = 20
     text = "ArxisOS 1.0"
-    font = "DejaVu Sans Regular 11"
+    font = "dejavu_sans_11"
     color = "#8b949e"
     align = "left"
 }
@@ -70,7 +70,7 @@ terminal-border: "0"
     height = 20
     id = "__timeout__"
     text = "Starting in %d seconds"
-    font = "DejaVu Sans Regular 11"
+    font = "dejavu_sans_11"
     color = "#8b949e"
     align = "center"
 }

@@ -1,6 +1,6 @@
 name = "arxisos-kde"
 description = "ArxisOS KDE Plasma Desktop"
-version = "1.0.2"
+version = "1.0.3"
 distro = "fedora-43"
 
 # KDE Plasma and core groups
@@ -230,6 +230,48 @@ version = "*"
 
 [[packages]]
 name = "plymouth-plugin-script"
+version = "*"
+
+# Bootloader - CRITICAL for Anaconda to install GRUB on target system
+[[packages]]
+name = "grub2-efi-x64"
+version = "*"
+
+[[packages]]
+name = "grub2-efi-x64-modules"
+version = "*"
+
+[[packages]]
+name = "shim-x64"
+version = "*"
+
+[[packages]]
+name = "grub2-tools"
+version = "*"
+
+[[packages]]
+name = "grub2-tools-extra"
+version = "*"
+
+[[packages]]
+name = "efibootmgr"
+version = "*"
+
+[[packages]]
+name = "grub2-common"
+version = "*"
+
+# Also include kernel explicitly
+[[packages]]
+name = "kernel"
+version = "*"
+
+[[packages]]
+name = "kernel-modules"
+version = "*"
+
+[[packages]]
+name = "kernel-modules-extra"
 version = "*"
 
 # Customizations
