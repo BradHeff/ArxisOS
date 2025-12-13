@@ -1,0 +1,10 @@
+[SddmGreeterTheme]
+Name=ArxisOS
+Description=ArxisOS SDDM Theme
+Author=ArxisOS Team
+Version=1.0
+Website=https://arxisos.com
+MainScript=Main.qml
+ConfigFile=theme.conf
+Theme-Id=arxisos
+Type=sddm-theme

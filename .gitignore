@@ -1,0 +1,38 @@
+# ArxisOS Build - Git Ignore
+
+# Claude Code configuration
+.claude/
+
+# Fedora kickstarts reference (not needed in repo)
+fedora-kickstarts/
+
+# Theme archives and extracted files (already in branding/)
+Theme/
+
+# Built ISO files (too large for git)
+*.iso
+
+# Temporary build directories
+/var/tmp/arxisos-remaster/
+
+# Screenshots and temporary images
+*.png
+!branding/**/*.png
+
+# Backup files
+*.bak
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Build artifacts
+*.log
+*.tmp

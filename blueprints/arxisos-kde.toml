@@ -1,0 +1,264 @@
+name = "arxisos-kde"
+description = "ArxisOS KDE Plasma Desktop"
+version = "1.0.2"
+distro = "fedora-43"
+
+# KDE Plasma and core groups
+[[groups]]
+name = "kde-desktop"
+
+[[groups]]
+name = "kde-apps"
+
+[[groups]]
+name = "kde-media"
+
+[[groups]]
+name = "sound-and-video"
+
+# Explicitly add KDE Plasma core components
+[[packages]]
+name = "plasma-desktop"
+version = "*"
+
+[[packages]]
+name = "plasma-workspace"
+version = "*"
+
+[[packages]]
+name = "sddm"
+version = "*"
+
+[[packages]]
+name = "sddm-kcm"
+version = "*"
+
+[[packages]]
+name = "plasma-systemsettings"
+version = "*"
+
+[[packages]]
+name = "kwin"
+version = "*"
+
+[[packages]]
+name = "konsole"
+version = "*"
+
+[[packages]]
+name = "dolphin"
+version = "*"
+
+[[packages]]
+name = "kate"
+version = "*"
+
+[[packages]]
+name = "ark"
+version = "*"
+
+[[packages]]
+name = "gwenview"
+version = "*"
+
+[[packages]]
+name = "okular"
+version = "*"
+
+[[packages]]
+name = "spectacle"
+version = "*"
+
+[[packages]]
+name = "plasma-nm"
+version = "*"
+
+[[packages]]
+name = "plasma-pa"
+version = "*"
+
+[[packages]]
+name = "bluedevil"
+version = "*"
+
+[[packages]]
+name = "powerdevil"
+version = "*"
+
+[[packages]]
+name = "kscreen"
+version = "*"
+
+# Anaconda installer
+[[packages]]
+name = "anaconda"
+version = "*"
+
+[[packages]]
+name = "anaconda-live"
+version = "*"
+
+# Network
+[[packages]]
+name = "NetworkManager"
+version = "*"
+
+[[packages]]
+name = "NetworkManager-wifi"
+version = "*"
+
+[[packages]]
+name = "NetworkManager-bluetooth"
+version = "*"
+
+# Fonts
+[[packages]]
+name = "google-noto-sans-fonts"
+version = "*"
+
+[[packages]]
+name = "google-noto-serif-fonts"
+version = "*"
+
+[[packages]]
+name = "dejavu-sans-fonts"
+version = "*"
+
+[[packages]]
+name = "dejavu-serif-fonts"
+version = "*"
+
+[[packages]]
+name = "liberation-fonts-all"
+version = "*"
+
+# Printing
+[[packages]]
+name = "cups"
+version = "*"
+
+[[packages]]
+name = "cups-filters"
+version = "*"
+
+# KDE Connect
+[[packages]]
+name = "kdeconnectd"
+version = "*"
+
+# Applications
+[[packages]]
+name = "firefox"
+version = "*"
+
+[[packages]]
+name = "remmina"
+version = "*"
+
+[[packages]]
+name = "remmina-plugins-rdp"
+version = "*"
+
+[[packages]]
+name = "remmina-plugins-vnc"
+version = "*"
+
+[[packages]]
+name = "remmina-plugins-spice"
+version = "*"
+
+[[packages]]
+name = "libreoffice"
+version = "*"
+
+# Flatpak
+[[packages]]
+name = "flatpak"
+version = "*"
+
+# System utilities
+[[packages]]
+name = "fastfetch"
+version = "*"
+
+[[packages]]
+name = "htop"
+version = "*"
+
+[[packages]]
+name = "git"
+version = "*"
+
+[[packages]]
+name = "vim-enhanced"
+version = "*"
+
+[[packages]]
+name = "wget2"
+version = "*"
+
+[[packages]]
+name = "curl"
+version = "*"
+
+# Multimedia
+[[packages]]
+name = "gstreamer1-plugins-bad-free"
+version = "*"
+
+[[packages]]
+name = "gstreamer1-plugins-good"
+version = "*"
+
+# Firmware
+[[packages]]
+name = "linux-firmware"
+version = "*"
+
+[[packages]]
+name = "iwlwifi-dvm-firmware"
+version = "*"
+
+[[packages]]
+name = "iwlwifi-mvm-firmware"
+version = "*"
+
+# Plymouth
+[[packages]]
+name = "plymouth-theme-spinner"
+version = "*"
+
+[[packages]]
+name = "plymouth-plugin-script"
+version = "*"
+
+# Customizations
+[customizations]
+hostname = "arxisos"
+
+[customizations.locale]
+languages = ["en_AU.UTF-8"]
+keyboard = "us"
+
+[customizations.timezone]
+timezone = "Australia/Adelaide"
+
+[customizations.firewall]
+ports = ["1714-1764:tcp", "1714-1764:udp"]
+
+[customizations.firewall.services]
+enabled = ["mdns", "ssh"]
+
+[[customizations.user]]
+name = "arxis"
+description = "ArxisOS User"
+password = "$6$i0FAwpd5FURzJogK$Q/OYpX8Um3PDAT7Lk6k0sVg7NbpWf0pyG0G5EW5R1qhpMkGPwGqKe2ZLBnXzT3qOUrbF/PvO0Go.TBEu.C6JN/"
+groups = ["wheel"]
+
+[customizations.services]
+enabled = ["sddm", "NetworkManager", "bluetooth", "cups"]
+disabled = ["gdm"]
+
+# Set graphical target as default with Plymouth splash
+[customizations.kernel]
+append = "plymouth.enable=1 quiet splash"

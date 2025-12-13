@@ -1,0 +1,11 @@
+[General]
+ColorScheme=PurPurNightColorscheme
+Name=PurPurNight
+widgetStyle=breeze
+
+[Icons]
+Theme=Vivid-Glassy-Dark-Icons
+
+[KDE]
+LookAndFeelPackage=PurPurNight-Global-6
+widgetStyle=breeze
