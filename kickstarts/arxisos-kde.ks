@@ -38,12 +38,23 @@ repo --name=updates --mirrorlist=https://mirrors.fedoraproject.org/mirrorlist?re
 
 # Live image essentials
 dracut-live
+livesys-scripts
 
 # KDE Plasma Desktop
 @kde-desktop
 @kde-apps
 @kde-media
 @sound-and-video
+plasma-workspace-x11
+plasma-workspace-wayland
+kwin-x11
+plasma-systemmonitor
+plasma-discover
+xdg-desktop-portal-kde
+dbus-x11
+xorg-x11-server-Xorg
+xorg-x11-drv-libinput
+xorg-x11-xinit
 
 # Network
 NetworkManager
@@ -69,7 +80,6 @@ firefox
 remmina
 remmina-plugins-rdp
 remmina-plugins-vnc
-remmina-plugins-spice
 libreoffice
 
 # Flatpak support
@@ -209,7 +219,18 @@ mkdir -p /etc/sddm.conf.d
 cat > /etc/sddm.conf.d/arxisos.conf << 'EOF'
 [Theme]
 Current=arxisos
+
+[General]
+DefaultSession=plasmax11.desktop
+
+[X11]
+ServerArguments=-nolisten tcp
 EOF
+
+# Ensure the live environment picks KDE as the session (livesys uses this)
+if [ -f /etc/sysconfig/livesys ]; then
+    sed -i 's/^livesys_session=.*/livesys_session=\"kde\"/' /etc/sysconfig/livesys
+fi
 
 # ----------------------
 # Plymouth Theme

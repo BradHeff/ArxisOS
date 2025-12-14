@@ -39,12 +39,13 @@ sudo rm -f "$BUILD_DIR/$ISO_NAME"
 # Run livecd-creator
 echo "Running livecd-creator..."
 cd "$BUILD_DIR"
-sudo livecd-creator \
+sudo rm -f "$LOG_FILE"
+sudo bash -c "livecd-creator \
     --verbose \
-    --config="$BUILD_DIR/kickstarts/arxisos-kde.ks" \
-    --fslabel="ArxisOS-$VERSION" \
-    --cache="$CACHE_DIR" \
-    2>&1 | tee "$LOG_FILE"
+    --config=\"$BUILD_DIR/kickstarts/arxisos-kde.ks\" \
+    --fslabel=\"ArxisOS-$VERSION\" \
+    --cache=\"$CACHE_DIR\" \
+    2>&1 | tee \"$LOG_FILE\""
 
 # Find and rename the ISO
 CREATED_ISO=$(ls -1 ArxisOS-*.iso 2>/dev/null | head -1)

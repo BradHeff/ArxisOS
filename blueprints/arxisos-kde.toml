@@ -26,6 +26,14 @@ name = "plasma-workspace"
 version = "*"
 
 [[packages]]
+name = "plasma-workspace-x11"
+version = "*"
+
+[[packages]]
+name = "plasma-workspace-wayland"
+version = "*"
+
+[[packages]]
 name = "sddm"
 version = "*"
 
@@ -39,6 +47,10 @@ version = "*"
 
 [[packages]]
 name = "kwin"
+version = "*"
+
+[[packages]]
+name = "kwin-x11"
 version = "*"
 
 [[packages]]
@@ -70,6 +82,14 @@ name = "spectacle"
 version = "*"
 
 [[packages]]
+name = "plasma-systemmonitor"
+version = "*"
+
+[[packages]]
+name = "plasma-discover"
+version = "*"
+
+[[packages]]
 name = "plasma-nm"
 version = "*"
 
@@ -87,6 +107,14 @@ version = "*"
 
 [[packages]]
 name = "kscreen"
+version = "*"
+
+[[packages]]
+name = "xdg-desktop-portal-kde"
+version = "*"
+
+[[packages]]
+name = "dbus-x11"
 version = "*"
 
 # Anaconda installer
@@ -201,6 +229,18 @@ version = "*"
 name = "curl"
 version = "*"
 
+[[packages]]
+name = "xorg-x11-server-Xorg"
+version = "*"
+
+[[packages]]
+name = "xorg-x11-drv-libinput"
+version = "*"
+
+[[packages]]
+name = "xorg-x11-xinit"
+version = "*"
+
 # Multimedia
 [[packages]]
 name = "gstreamer1-plugins-bad-free"
@@ -296,6 +336,16 @@ name = "arxis"
 description = "ArxisOS User"
 password = "$6$i0FAwpd5FURzJogK$Q/OYpX8Um3PDAT7Lk6k0sVg7NbpWf0pyG0G5EW5R1qhpMkGPwGqKe2ZLBnXzT3qOUrbF/PvO0Go.TBEu.C6JN/"
 groups = ["wheel"]
+
+[[customizations.files]]
+path = "/etc/sddm.conf.d/arxisos.conf"
+data = "W1RoZW1lXQpDdXJyZW50PWFyeGlzb3MKCltHZW5lcmFsXQpEZWZhdWx0U2Vzc2lvbj1wbGFzbWF4MTEuZGVza3RvcAoKW1gxMV0KU2VydmVyQXJndW1lbnRzPS1ub2xpc3RlbiB0Y3AK"
+mode = "0644"
+
+[[customizations.files]]
+path = "/etc/sysconfig/livesys"
+data = "bGl2ZXN5c19zZXNzaW9uPSJrZGUiCg=="
+mode = "0644"
 
 [customizations.services]
 enabled = ["sddm", "NetworkManager", "bluetooth", "cups"]

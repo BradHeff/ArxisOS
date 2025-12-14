@@ -3,20 +3,50 @@ set -euo pipefail
 
 # Apply ArxisOS branding to a Fedora live ISO
 
-# Cleanup function for error handling
-cleanup_on_error() {
-    echo "ERROR: Script failed. Cleaning up..."
+# Cleanup function for error handling - handles ALL exit scenarios
+cleanup_mounts() {
+    local exit_code=$?
     local work_dir="/var/tmp/arxisos-remaster"
-    sudo umount "$work_dir/squashfs/run" 2>/dev/null || true
-    sudo umount "$work_dir/squashfs/sys" 2>/dev/null || true
-    sudo umount "$work_dir/squashfs/proc" 2>/dev/null || true
-    sudo umount "$work_dir/squashfs/dev" 2>/dev/null || true
-    sudo umount "$work_dir/squashfs/rootfs" 2>/dev/null || true
-    sudo umount "$work_dir/squashfs" 2>/dev/null || true
-    sudo umount "$work_dir/iso" 2>/dev/null || true
-    exit 1
+
+    # Only show error message if exit code is non-zero
+    if [ $exit_code -ne 0 ]; then
+        echo ""
+        echo "ERROR: Script failed (exit code: $exit_code). Cleaning up mounts..."
+    fi
+
+    # Unmount bind mounts first (in reverse order of mounting)
+    # These are critical - leaving these mounted causes /dev/null errors!
+    for mount_point in run sys proc dev; do
+        # Try both possible rootfs locations
+        sudo umount -l "$work_dir/squashfs/rootfs/$mount_point" 2>/dev/null || true
+        sudo umount -l "$work_dir/squashfs/$mount_point" 2>/dev/null || true
+    done
+
+    # Small delay to ensure mounts are released
+    sleep 1
+
+    # Unmount rootfs.img if mounted
+    sudo umount -l "$work_dir/squashfs/rootfs" 2>/dev/null || true
+
+    # Unmount squashfs
+    sudo umount -l "$work_dir/squashfs" 2>/dev/null || true
+
+    # Unmount ISO
+    sudo umount -l "$work_dir/iso" 2>/dev/null || true
+
+    # Detach any loop devices associated with work_dir
+    for loop in $(losetup -a 2>/dev/null | grep "$work_dir" | cut -d: -f1); do
+        sudo losetup -d "$loop" 2>/dev/null || true
+    done
+
+    if [ $exit_code -ne 0 ]; then
+        echo "Cleanup complete."
+        exit $exit_code
+    fi
 }
-trap cleanup_on_error ERR
+# Trap ALL exit scenarios: errors, normal exit, interrupt, terminate
+trap cleanup_mounts EXIT
+trap 'exit 1' INT TERM
 # This script modifies the ISO to include custom Plymouth, GRUB, wallpaper, etc.
 
 BUILD_DIR="/home/bheffernan/arxisos-build"
@@ -53,11 +83,21 @@ echo "Input:  $ISO_INPUT"
 echo "Output: $ISO_OUTPUT"
 echo ""
 
-# Clean up previous work - unmount any existing mounts first
+# Clean up previous work - unmount any existing mounts first (prevents /dev/null errors)
 echo "Cleaning up previous work..."
-sudo umount "$WORK_DIR/squashfs/rootfs" 2>/dev/null || true
-sudo umount "$WORK_DIR/squashfs" 2>/dev/null || true
-sudo umount "$WORK_DIR/iso" 2>/dev/null || true
+# First unmount bind mounts (critical - these cause /dev/null errors if left mounted)
+for mount_point in run sys proc dev; do
+    sudo umount -l "$WORK_DIR/squashfs/rootfs/$mount_point" 2>/dev/null || true
+    sudo umount -l "$WORK_DIR/squashfs/$mount_point" 2>/dev/null || true
+done
+# Then unmount filesystems
+sudo umount -l "$WORK_DIR/squashfs/rootfs" 2>/dev/null || true
+sudo umount -l "$WORK_DIR/squashfs" 2>/dev/null || true
+sudo umount -l "$WORK_DIR/iso" 2>/dev/null || true
+# Detach any loop devices from previous runs
+for loop in $(losetup -a 2>/dev/null | grep "$WORK_DIR" | cut -d: -f1); do
+    sudo losetup -d "$loop" 2>/dev/null || true
+done
 sleep 1
 sudo rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"/{iso,squashfs}
@@ -286,38 +326,40 @@ if [ -f "$WORK_DIR/new_iso/images/pxeboot/initrd.img" ]; then
         sudo cp "$BRANDING_DIR/plymouth/arxisos/logo.png" "$INITRD_WORK/usr/share/plymouth/themes/arxisos/"
 
         # Also replace Fedora branding in existing themes (bgrt, spinner, etc.)
-        echo "  - Replacing Fedora logos in initrd Plymouth themes"
+        echo "  - Replacing Fedora watermarks in initrd Plymouth themes"
 
-        # Create smaller, elegant version of logo for Plymouth (128px wide)
+        # Create small watermark for Plymouth (48x48 - appears at bottom of screen)
         PLYMOUTH_LOGO="/tmp/arxisos-plymouth-logo.png"
-        if command -v convert &> /dev/null; then
-            echo "    Creating resized Plymouth logo (128px)..."
-            convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
-                cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
+        WATERMARK_CREATED=false
+
+        if [ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]; then
+            echo "    Creating resized Plymouth watermark (48px)..."
+            if command -v magick &> /dev/null; then
+                magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO" 2>/dev/null && WATERMARK_CREATED=true
+            elif command -v convert &> /dev/null; then
+                convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO" 2>/dev/null && WATERMARK_CREATED=true
+            fi
+        fi
+
+        # Only replace if we successfully created a resized watermark
+        if [ "$WATERMARK_CREATED" = "true" ] && [ -f "$PLYMOUTH_LOGO" ]; then
+            # Only replace watermark files specifically (NOT logo files which may be larger)
+            sudo find "$INITRD_WORK/usr/share/plymouth/themes" -name "*watermark*" -type f | while read -r pngfile; do
+                echo "    Replacing: $pngfile"
+                sudo cp "$PLYMOUTH_LOGO" "$pngfile" 2>/dev/null || true
+            done
+
+            # Explicitly replace spinner watermark (this is the "fedora" logo at bottom)
+            if [ -d "$INITRD_WORK/usr/share/plymouth/themes/spinner" ]; then
+                sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
+            fi
+
+            # Replace bgrt watermark
+            if [ -d "$INITRD_WORK/usr/share/plymouth/themes/bgrt" ]; then
+                sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
+            fi
         else
-            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
-        fi
-
-        # Find ALL png files in plymouth themes and replace any that look like logos/watermarks
-        sudo find "$INITRD_WORK/usr/share/plymouth/themes" -name "*.png" -type f | while read -r pngfile; do
-            filename=$(basename "$pngfile")
-            # Replace watermark, logo, fedora-related images
-            case "$filename" in
-                *watermark*|*logo*|*fedora*|*bgrt*)
-                    echo "    Replacing: $pngfile"
-                    sudo cp "$PLYMOUTH_LOGO" "$pngfile" 2>/dev/null || true
-                    ;;
-            esac
-        done
-
-        # Explicitly replace spinner watermark (this is the "fedora" logo at bottom)
-        if [ -d "$INITRD_WORK/usr/share/plymouth/themes/spinner" ]; then
-            sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
-        fi
-
-        # Replace bgrt watermark
-        if [ -d "$INITRD_WORK/usr/share/plymouth/themes/bgrt" ]; then
-            sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
+            echo "    WARNING: Could not resize logo, skipping watermark replacement"
         fi
 
         # Clean up temp logo
@@ -355,9 +397,10 @@ sudo unsquashfs -d "$WORK_DIR/squashfs" "$WORK_DIR/iso/LiveOS/squashfs.img"
 ROOTFS_IMG=$(find "$WORK_DIR/squashfs" -maxdepth 2 -name "rootfs.img" 2>/dev/null | head -1)
 if [ -n "$ROOTFS_IMG" ]; then
     echo "Traditional Fedora live format detected (rootfs.img)"
+    # Define ROOTFS_DIR BEFORE using it
+    ROOTFS_DIR="$WORK_DIR/squashfs/rootfs"
     mkdir -p "$ROOTFS_DIR"
     sudo mount -o loop "$ROOTFS_IMG" "$ROOTFS_DIR"
-    ROOTFS_DIR="$ROOTFS_DIR"
     MOUNTED_ROOTFS=true
 else
     echo "OSBuild format detected (squashfs is rootfs)"
@@ -390,11 +433,14 @@ sudo cp -L /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf" 2>/dev/null || \
 echo "  - Installing plasma-desktop, sddm, konsole, dolphin..."
 echo "    (This may take 10-20 minutes, showing progress...)"
 sudo chroot "$ROOTFS_DIR" dnf install -y --releasever=43 --allowerasing \
-    plasma-desktop plasma-workspace sddm sddm-kcm \
+    plasma-desktop plasma-workspace plasma-workspace-x11 sddm sddm-kcm \
     konsole dolphin kate ark gwenview okular spectacle \
     plasma-nm plasma-pa bluedevil powerdevil kscreen \
-    kwin breeze-gtk breeze-icon-theme \
+    kwin kwin-x11 breeze-gtk breeze-icon-theme \
+    xorg-x11-server-Xorg xorg-x11-drv-libinput xorg-x11-xinit \
+    plasma-systemmonitor plasma-discover \
     NetworkManager-wifi NetworkManager-bluetooth \
+    dbus-x11 xdg-desktop-portal-kde \
     || echo "Warning: Some packages may have failed"
 
 # Install bootloader packages - CRITICAL for Anaconda to install GRUB on target disk
@@ -479,11 +525,21 @@ LIVEUSER_SERVICE
 sudo chroot "$ROOTFS_DIR" systemctl enable liveuser-setup.service 2>/dev/null || true
 # ============================================
 
-# Unmount bind mounts
-sudo umount "$ROOTFS_DIR/run" 2>/dev/null || true
-sudo umount "$ROOTFS_DIR/sys" 2>/dev/null || true
-sudo umount "$ROOTFS_DIR/proc" 2>/dev/null || true
-sudo umount "$ROOTFS_DIR/dev" 2>/dev/null || true
+# Unmount bind mounts (in reverse order, use lazy unmount for safety)
+echo "  - Unmounting chroot bind mounts..."
+sync  # Ensure all writes are flushed
+sudo umount -l "$ROOTFS_DIR/run" 2>/dev/null || true
+sudo umount -l "$ROOTFS_DIR/sys" 2>/dev/null || true
+sudo umount -l "$ROOTFS_DIR/proc" 2>/dev/null || true
+sudo umount -l "$ROOTFS_DIR/dev" 2>/dev/null || true
+sleep 1  # Give kernel time to release mounts
+
+# Verify mounts are released
+if mount | grep -q "$ROOTFS_DIR/dev"; then
+    echo "WARNING: /dev still mounted, forcing unmount..."
+    sudo fuser -km "$ROOTFS_DIR/dev" 2>/dev/null || true
+    sudo umount -f "$ROOTFS_DIR/dev" 2>/dev/null || true
+fi
 
 echo "  - KDE Plasma installation complete"
 # ============================================
@@ -503,23 +559,34 @@ ShowDelay=0
 DeviceTimeout=8
 PLYMOUTHCONF
 
-    # Create smaller, elegant version of logo for Plymouth (128px wide)
+    # Create small watermark for Plymouth (48x48 - appears at bottom of screen)
     PLYMOUTH_LOGO_ROOTFS="/tmp/arxisos-plymouth-logo-rootfs.png"
-    if command -v convert &> /dev/null; then
-        convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO_ROOTFS" 2>/dev/null || \
-            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO_ROOTFS"
+    WATERMARK_CREATED=false
+
+    if [ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]; then
+        echo "    Creating resized Plymouth watermark (48px)..."
+        if command -v magick &> /dev/null; then
+            magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO_ROOTFS" 2>/dev/null && WATERMARK_CREATED=true
+        elif command -v convert &> /dev/null; then
+            convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO_ROOTFS" 2>/dev/null && WATERMARK_CREATED=true
+        fi
+    fi
+
+    # Only replace if we successfully created a resized watermark
+    if [ "$WATERMARK_CREATED" = "true" ] && [ -f "$PLYMOUTH_LOGO_ROOTFS" ]; then
+        # Replace Fedora watermark with ArxisOS logo in spinner theme
+        if [ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]; then
+            sudo cp "$PLYMOUTH_LOGO_ROOTFS" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png"
+            echo "    - Replaced spinner watermark"
+        fi
+
+        # Also replace in bgrt theme (BIOS/UEFI logo fallback)
+        if [ -d "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt" ]; then
+            sudo cp "$PLYMOUTH_LOGO_ROOTFS" "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt/watermark.png"
+            echo "    - Replaced bgrt watermark"
+        fi
     else
-        cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO_ROOTFS"
-    fi
-
-    # Replace Fedora watermark with ArxisOS logo in spinner theme
-    if [ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]; then
-        sudo cp "$PLYMOUTH_LOGO_ROOTFS" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
-    fi
-
-    # Also replace in bgrt theme (BIOS/UEFI logo fallback)
-    if [ -d "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt" ]; then
-        sudo cp "$PLYMOUTH_LOGO_ROOTFS" "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
+        echo "    WARNING: Could not resize logo, skipping watermark replacement"
     fi
 
     rm -f "$PLYMOUTH_LOGO_ROOTFS"
@@ -833,40 +900,36 @@ fi
 
 # Copy skel (default user configuration)
 # The Skel directory is in BUILD_DIR/Skel (note: capital S)
+# IMPORTANT: Only copy GTK configs - Plasma configs cause plasmashell to fail
 SKEL_DIR="$BUILD_DIR/Skel"
 if [ -d "$SKEL_DIR" ]; then
-    echo "  - User skeleton configuration from $SKEL_DIR"
-    sudo cp -r "$SKEL_DIR/." "$ROOTFS_DIR/etc/skel/"
-    # Ensure .local/bin is executable
+    echo "  - User skeleton configuration (GTK only, Plasma uses defaults)"
+    sudo mkdir -p "$ROOTFS_DIR/etc/skel/.config"
+
+    # Only copy GTK and non-Plasma configs
+    [ -d "$SKEL_DIR/.config/gtk-3.0" ] && sudo cp -r "$SKEL_DIR/.config/gtk-3.0" "$ROOTFS_DIR/etc/skel/.config/"
+    [ -d "$SKEL_DIR/.config/gtk-4.0" ] && sudo cp -r "$SKEL_DIR/.config/gtk-4.0" "$ROOTFS_DIR/etc/skel/.config/"
+    [ -d "$SKEL_DIR/.config/environment.d" ] && sudo cp -r "$SKEL_DIR/.config/environment.d" "$ROOTFS_DIR/etc/skel/.config/"
+    [ -f "$SKEL_DIR/.bashrc" ] && sudo cp "$SKEL_DIR/.bashrc" "$ROOTFS_DIR/etc/skel/"
+    [ -d "$SKEL_DIR/.local" ] && sudo cp -r "$SKEL_DIR/.local" "$ROOTFS_DIR/etc/skel/"
     sudo chmod +x "$ROOTFS_DIR/etc/skel/.local/bin/"* 2>/dev/null || true
 
-    # NOTE: Keeping minimal plasma config files for top panel position and wallpaper
-    # The configs are now minimal - just panel location=3 (top) and wallpaper path
-    echo "  - Keeping minimal plasma configs (top panel, wallpaper)"
+    echo "  - Skipping Plasma configs (using Breeze defaults for stability)"
 
-    # IMPORTANT: Also copy to liveuser's home since it was created before this step
+    # Setup liveuser with defaults
     if [ -d "$ROOTFS_DIR/home/liveuser" ]; then
-        echo "  - Copying skel to liveuser home"
-        sudo cp -r "$SKEL_DIR/." "$ROOTFS_DIR/home/liveuser/"
-        # Remove plasma panel configs from liveuser too
-        sudo rm -f "$ROOTFS_DIR/home/liveuser/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
-        sudo rm -f "$ROOTFS_DIR/home/liveuser/.config/plasmashellrc" 2>/dev/null || true
-        sudo chroot "$ROOTFS_DIR" chown -R liveuser:liveuser /home/liveuser 2>/dev/null || true
-    fi
-elif [ -d "$BRANDING_DIR/skel" ]; then
-    # Fallback to branding/skel if it exists
-    echo "  - User skeleton configuration from $BRANDING_DIR/skel"
-    sudo cp -r "$BRANDING_DIR/skel/." "$ROOTFS_DIR/etc/skel/"
-    sudo chmod +x "$ROOTFS_DIR/etc/skel/.local/bin/"* 2>/dev/null || true
-    # Remove plasma panel configs
-    sudo rm -f "$ROOTFS_DIR/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
-    sudo rm -f "$ROOTFS_DIR/etc/skel/.config/plasmashellrc" 2>/dev/null || true
+        echo "  - Setting up liveuser with defaults"
+        sudo mkdir -p "$ROOTFS_DIR/home/liveuser/.config"
+        [ -d "$SKEL_DIR/.config/gtk-3.0" ] && sudo cp -r "$SKEL_DIR/.config/gtk-3.0" "$ROOTFS_DIR/home/liveuser/.config/"
+        [ -d "$SKEL_DIR/.config/gtk-4.0" ] && sudo cp -r "$SKEL_DIR/.config/gtk-4.0" "$ROOTFS_DIR/home/liveuser/.config/"
+        [ -d "$SKEL_DIR/.config/environment.d" ] && sudo cp -r "$SKEL_DIR/.config/environment.d" "$ROOTFS_DIR/home/liveuser/.config/"
+        [ -f "$SKEL_DIR/.bashrc" ] && sudo cp "$SKEL_DIR/.bashrc" "$ROOTFS_DIR/home/liveuser/"
+        [ -d "$SKEL_DIR/.local" ] && sudo cp -r "$SKEL_DIR/.local" "$ROOTFS_DIR/home/liveuser/"
 
-    if [ -d "$ROOTFS_DIR/home/liveuser" ]; then
-        echo "  - Copying skel to liveuser home"
-        sudo cp -r "$BRANDING_DIR/skel/." "$ROOTFS_DIR/home/liveuser/"
-        sudo rm -f "$ROOTFS_DIR/home/liveuser/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
-        sudo rm -f "$ROOTFS_DIR/home/liveuser/.config/plasmashellrc" 2>/dev/null || true
+        # Ensure no leftover Plasma configs that could break plasmashell
+        sudo rm -rf "$ROOTFS_DIR/home/liveuser/.config/plasma*" 2>/dev/null || true
+        sudo rm -rf "$ROOTFS_DIR/home/liveuser/.config/k*" 2>/dev/null || true
+
         sudo chroot "$ROOTFS_DIR" chown -R liveuser:liveuser /home/liveuser 2>/dev/null || true
     fi
 fi
@@ -882,20 +945,25 @@ echo "  - SDDM configuration"
 sudo mkdir -p "$ROOTFS_DIR/etc/sddm.conf.d"
 
 # Base SDDM config (theme, session) - NO autologin here
+# Use X11 session for better VM/live environment compatibility
 sudo tee "$ROOTFS_DIR/etc/sddm.conf.d/arxisos.conf" > /dev/null << 'SDDM_EOF'
 [Theme]
 Current=arxisos
 CursorTheme=oreo_white_cursors
 
 [General]
-DefaultSession=plasma.desktop
+DefaultSession=plasmax11.desktop
 
 [X11]
 ServerArguments=-nolisten tcp
+
+[Wayland]
+SessionDir=/usr/share/wayland-sessions
 SDDM_EOF
 
 # Create systemd service to enable autologin ONLY in live session
 # Live sessions have /run/initramfs/live present
+# Use X11 session (plasmax11) for better compatibility in live/VM environments
 echo "  - Creating live-session autologin service"
 sudo tee "$ROOTFS_DIR/etc/systemd/system/sddm-live-autologin.service" > /dev/null << 'LIVE_AUTOLOGIN_EOF'
 [Unit]
@@ -905,7 +973,14 @@ After=local-fs.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'if [ -d /run/initramfs/live ] || grep -q "root=live:" /proc/cmdline 2>/dev/null; then echo "[Autologin]"; echo "User=liveuser"; echo "Session=plasma"; echo "Relogin=false"; fi > /etc/sddm.conf.d/live-autologin.conf'
+ExecStart=/bin/bash -c '\
+    if [ -d /run/initramfs/live ] || grep -q "root=live:" /proc/cmdline 2>/dev/null; then \
+        mkdir -p /etc/sddm.conf.d; \
+        echo "[Autologin]" > /etc/sddm.conf.d/live-autologin.conf; \
+        echo "User=liveuser" >> /etc/sddm.conf.d/live-autologin.conf; \
+        echo "Session=plasmax11" >> /etc/sddm.conf.d/live-autologin.conf; \
+        echo "Relogin=false" >> /etc/sddm.conf.d/live-autologin.conf; \
+    fi'
 ExecStop=/bin/rm -f /etc/sddm.conf.d/live-autologin.conf
 RemainAfterExit=yes
 
@@ -920,15 +995,15 @@ echo "  - Setting Plasma as default session"
 sudo mkdir -p "$ROOTFS_DIR/etc/X11/xinit"
 echo "PREFERRED=plasma" | sudo tee "$ROOTFS_DIR/etc/sysconfig/desktop" > /dev/null 2>&1 || true
 
-# Configure AccountsService for live user to use Plasma
-echo "  - Configuring live user for Plasma session"
+# Configure AccountsService for live user to use Plasma X11
+echo "  - Configuring live user for Plasma X11 session"
 sudo mkdir -p "$ROOTFS_DIR/var/lib/AccountsService/users"
 # Configure for common live user names
 for liveuser in liveuser live arxis; do
     sudo tee "$ROOTFS_DIR/var/lib/AccountsService/users/$liveuser" > /dev/null << ACCOUNTSEOF
 [User]
-Session=plasma
-XSession=plasma
+Session=plasmax11
+XSession=plasmax11
 Icon=/usr/share/pixmaps/arxisos-logo.png
 SystemAccount=false
 ACCOUNTSEOF
@@ -972,23 +1047,20 @@ echo "  - Setting Plasma as default session"
 sudo mkdir -p "$ROOTFS_DIR/usr/share/xsessions"
 sudo mkdir -p "$ROOTFS_DIR/usr/share/wayland-sessions"
 
-# For X11 sessions
-if [ -f "$ROOTFS_DIR/usr/share/xsessions/plasma.desktop" ]; then
+# For X11 sessions - use plasmax11 for stability
+if [ -f "$ROOTFS_DIR/usr/share/xsessions/plasmax11.desktop" ]; then
+    sudo ln -sf plasmax11.desktop "$ROOTFS_DIR/usr/share/xsessions/default.desktop" 2>/dev/null || true
+elif [ -f "$ROOTFS_DIR/usr/share/xsessions/plasma.desktop" ]; then
     sudo ln -sf plasma.desktop "$ROOTFS_DIR/usr/share/xsessions/default.desktop" 2>/dev/null || true
-fi
-
-# For Wayland sessions (Plasma 6 uses plasmawayland by default)
-if [ -f "$ROOTFS_DIR/usr/share/wayland-sessions/plasma.desktop" ]; then
-    sudo ln -sf plasma.desktop "$ROOTFS_DIR/usr/share/wayland-sessions/default.desktop" 2>/dev/null || true
 fi
 
 # Set default session in accountsservice for all users
 sudo mkdir -p "$ROOTFS_DIR/var/lib/AccountsService/users"
-# Default template for new users to use Plasma
+# Default template for new users to use Plasma X11
 sudo tee "$ROOTFS_DIR/var/lib/AccountsService/users/liveuser" > /dev/null << 'ACCT_EOF'
 [User]
-Session=plasma
-XSession=plasma
+Session=plasmax11
+XSession=plasmax11
 Icon=/usr/share/sddm/faces/.face.icon
 ACCT_EOF
 
@@ -1014,26 +1086,62 @@ sudo rm -f "$ROOTFS_DIR/usr/share/applications/gnome-initial-setup.desktop" 2>/d
 # Also remove from autostart completely
 sudo rm -rf "$ROOTFS_DIR/etc/xdg/autostart/org.gnome."* 2>/dev/null || true
 
-# Replace Fedora icons with ArxisOS icons (keep filenames for compatibility)
+# Install start.svg as the application menu icon (start-here, distributor-logo)
 echo "  - Replacing Fedora icons with ArxisOS icons"
+if [ -f "$BRANDING_DIR/start.svg" ]; then
+    echo "    - Installing start.svg as application menu icon..."
+
+    # Copy SVG to scalable icons
+    sudo mkdir -p "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps"
+    sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps/start-here.svg"
+    sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps/distributor-logo.svg"
+    sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps/arxisos-start.svg"
+
+    # Generate PNG versions from start.svg for different sizes
+    if command -v convert &> /dev/null || command -v magick &> /dev/null; then
+        CONVERT_CMD="convert"
+        command -v magick &> /dev/null && CONVERT_CMD="magick"
+
+        for size in 16 22 24 32 48 64 96 128 256 512; do
+            ICON_DIR="$ROOTFS_DIR/usr/share/icons/hicolor/${size}x${size}/apps"
+            sudo mkdir -p "$ICON_DIR"
+            echo "      - Generating ${size}x${size} icons from start.svg..."
+            sudo $CONVERT_CMD -background none "$BRANDING_DIR/start.svg" -resize ${size}x${size} "$ICON_DIR/start-here.png" 2>/dev/null || true
+            sudo cp "$ICON_DIR/start-here.png" "$ICON_DIR/distributor-logo.png" 2>/dev/null || true
+            sudo cp "$ICON_DIR/start-here.png" "$ICON_DIR/arxisos-start.png" 2>/dev/null || true
+        done
+    fi
+
+    # Copy to pixmaps
+    sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/pixmaps/start-here.svg" 2>/dev/null || true
+    sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/pixmaps/distributor-logo.svg" 2>/dev/null || true
+    sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/pixmaps/arxisos-start.svg" 2>/dev/null || true
+fi
+
+# Install arxisos-logo.png for other branding (fedora replacements)
 if [ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]; then
+    echo "    - Installing arxisos-logo.png for system branding..."
+
     # Replace fedora-logo icons in various sizes
     for size in 16 22 24 32 48 64 96 128 256 512; do
         ICON_DIR="$ROOTFS_DIR/usr/share/icons/hicolor/${size}x${size}/apps"
         if [ -d "$ICON_DIR" ]; then
-            # Convert and copy ArxisOS logo as fedora-logo
-            if command -v convert &> /dev/null; then
-                sudo convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize ${size}x${size} "$ICON_DIR/fedora-logo-icon.png" 2>/dev/null || true
+            if command -v convert &> /dev/null || command -v magick &> /dev/null; then
+                CONVERT_CMD="convert"
+                command -v magick &> /dev/null && CONVERT_CMD="magick"
+                sudo $CONVERT_CMD "$BRANDING_DIR/logos/arxisos-logo.png" -resize ${size}x${size} "$ICON_DIR/fedora-logo-icon.png" 2>/dev/null || true
                 sudo cp "$ICON_DIR/fedora-logo-icon.png" "$ICON_DIR/fedora-logo-small.png" 2>/dev/null || true
-                sudo cp "$ICON_DIR/fedora-logo-icon.png" "$ICON_DIR/start-here.png" 2>/dev/null || true
+                sudo cp "$ICON_DIR/fedora-logo-icon.png" "$ICON_DIR/arxisos-logo.png" 2>/dev/null || true
             fi
         fi
     done
+
     # Also replace in pixmaps
     sudo cp "$BRANDING_DIR/logos/arxisos-logo.png" "$ROOTFS_DIR/usr/share/pixmaps/fedora-logo.png" 2>/dev/null || true
     sudo cp "$BRANDING_DIR/logos/arxisos-logo.png" "$ROOTFS_DIR/usr/share/pixmaps/fedora-logo-small.png" 2>/dev/null || true
     sudo cp "$BRANDING_DIR/logos/arxisos-logo.png" "$ROOTFS_DIR/usr/share/pixmaps/fedora-gdm-logo.png" 2>/dev/null || true
     sudo cp "$BRANDING_DIR/logos/arxisos-logo.png" "$ROOTFS_DIR/usr/share/pixmaps/system-logo-white.png" 2>/dev/null || true
+    sudo cp "$BRANDING_DIR/logos/arxisos-logo.png" "$ROOTFS_DIR/usr/share/pixmaps/arxisos-logo.png" 2>/dev/null || true
 fi
 
 # Create ArxisOS installer desktop shortcut
@@ -1044,7 +1152,7 @@ sudo tee "$ROOTFS_DIR/usr/share/applications/arxisos-installer.desktop" > /dev/n
 Name=Install ArxisOS
 Comment=Install ArxisOS to your hard drive
 Exec=/usr/bin/liveinst
-Icon=arxisos-logo
+Icon=arxisos-start
 Terminal=false
 Type=Application
 Categories=System;
@@ -1064,7 +1172,7 @@ sudo tee "$ROOTFS_DIR/etc/xdg/autostart/arxisos-installer-autostart.desktop" > /
 Name=Install ArxisOS
 Comment=Install ArxisOS to your hard drive
 Exec=/usr/bin/cp /usr/share/applications/arxisos-installer.desktop ~/Desktop/ 2>/dev/null; chmod +x ~/Desktop/arxisos-installer.desktop 2>/dev/null
-Icon=arxisos-logo
+Icon=arxisos-start
 Terminal=false
 Type=Application
 X-GNOME-Autostart-enabled=true
@@ -1144,12 +1252,12 @@ ExecStart=/bin/bash -c '\
                     cp /usr/share/sddm/faces/.face.icon "$user_home/.face.icon" 2>/dev/null || true; \
                     chown "$username:$username" "$user_home/.face.icon" 2>/dev/null || true; \
                 fi; \
-                # Set Plasma as default session for all users \
+                # Set Plasma X11 as default session for all users \
                 mkdir -p /var/lib/AccountsService/users; \
                 if [ ! -f "/var/lib/AccountsService/users/$username" ]; then \
                     echo "[User]" > "/var/lib/AccountsService/users/$username"; \
-                    echo "Session=plasma" >> "/var/lib/AccountsService/users/$username"; \
-                    echo "XSession=plasma" >> "/var/lib/AccountsService/users/$username"; \
+                    echo "Session=plasmax11" >> "/var/lib/AccountsService/users/$username"; \
+                    echo "XSession=plasmax11" >> "/var/lib/AccountsService/users/$username"; \
                     echo "Icon=$user_home/.face.icon" >> "/var/lib/AccountsService/users/$username"; \
                 fi; \
             fi; \
