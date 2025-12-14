@@ -305,21 +305,39 @@ systemctl enable sddm.service 2>/dev/null || true
 rm -f /etc/systemd/system/display-manager.service 2>/dev/null || true
 ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/display-manager.service 2>/dev/null || true
 
-# Set Plasma X11 session for all users
-echo "$(date): Setting Plasma session for users" >> "$LOG"
+# Force Plasma X11 session for ALL users (override any GNOME settings from installer)
+echo "$(date): Setting Plasma session for all users" >> "$LOG"
+
+# Remove any GNOME session files that might have been created
+rm -f /usr/share/xsessions/gnome*.desktop 2>/dev/null || true
+rm -f /usr/share/wayland-sessions/gnome*.desktop 2>/dev/null || true
+
 for user_home in /home/*; do
     username=$(basename "$user_home")
     if [ -d "$user_home" ] && [ "$username" != "liveuser" ] && id "$username" &>/dev/null; then
         mkdir -p /var/lib/AccountsService/users
+        # Force overwrite any existing AccountsService config
         cat > "/var/lib/AccountsService/users/$username" << USEREOF
 [User]
 Session=plasmax11
 XSession=plasmax11
 SystemAccount=false
 USEREOF
-        echo "$(date): Configured $username for Plasma" >> "$LOG"
+        echo "$(date): Configured $username for Plasma X11" >> "$LOG"
+
+        # Also set .dmrc for the user (legacy session selector)
+        cat > "$user_home/.dmrc" << DMRC
+[Desktop]
+Session=plasmax11
+DMRC
+        chown "$username:$username" "$user_home/.dmrc" 2>/dev/null || true
+
+        echo "$(date): Set .dmrc for $username" >> "$LOG"
     fi
 done
+
+# Restart AccountsService to pick up changes
+systemctl restart accounts-daemon.service 2>/dev/null || true
 
 # Regenerate GRUB config with ArxisOS theme
 echo "$(date): Regenerating GRUB config" >> "$LOG"
@@ -400,40 +418,29 @@ DeviceTimeout=8
 PLYCONF
 
     # Replace watermarks in spinner and bgrt themes with ArxisOS logo
-    # Watermark should be small (48-64px) - it appears at bottom of screen
     echo "  - Replacing Plymouth watermarks..."
     PLYMOUTH_LOGO="/tmp/arxisos-plymouth-watermark.png"
-    WATERMARK_CREATED=false
-
-    if [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
-        # Try magick first (ImageMagick 7), then convert (ImageMagick 6)
-        if command -v magick &> /dev/null; then
-            magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO" 2>/dev/null && WATERMARK_CREATED=true
-        elif command -v convert &> /dev/null; then
-            convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO" 2>/dev/null && WATERMARK_CREATED=true
-        fi
-
-        # Only proceed if we successfully created a resized watermark
-        if [[ "$WATERMARK_CREATED" == "true" && -f "$PLYMOUTH_LOGO" ]]; then
-            echo "    - Created 48x48 watermark"
-
-            # Replace in spinner theme
-            if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]]; then
-                sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png"
-                echo "    - Replaced spinner watermark"
-            fi
-
-            # Replace in bgrt theme
-            if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt" ]]; then
-                sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt/watermark.png"
-                echo "    - Replaced bgrt watermark"
-            fi
-        else
-            echo "    - WARNING: Could not resize logo, skipping watermark replacement"
-        fi
-
-        rm -f "$PLYMOUTH_LOGO"
+    if command -v magick &> /dev/null && [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
+        magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
+            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
+    elif command -v convert &> /dev/null && [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
+        convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
+            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
+    else
+        cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO" 2>/dev/null || true
     fi
+
+    # Replace in spinner theme
+    if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]]; then
+        sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
+    fi
+
+    # Replace in bgrt theme
+    if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt" ]]; then
+        sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
+    fi
+
+    rm -f "$PLYMOUTH_LOGO"
 
     # Configure Plymouth for installed system
     echo "  - Configuring Plymouth for installed system..."
@@ -476,36 +483,35 @@ if [[ -f "$INITRD_PATH" ]]; then
         sudo mkdir -p "$INITRD_WORK/usr/share/plymouth/themes/arxisos"
         sudo cp -r "$BRANDING_DIR/plymouth/arxisos/"* "$INITRD_WORK/usr/share/plymouth/themes/arxisos/" 2>/dev/null || true
 
-        # Create resized logo for Plymouth watermark (48x48 - small bottom watermark)
+        # Create resized logo for Plymouth watermark
         PLYMOUTH_LOGO="/tmp/arxisos-initrd-logo.png"
-        WATERMARK_CREATED=false
-
-        if [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
-            if command -v magick &> /dev/null; then
-                magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO" 2>/dev/null && WATERMARK_CREATED=true
-            elif command -v convert &> /dev/null; then
-                convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO" 2>/dev/null && WATERMARK_CREATED=true
-            fi
-        fi
-
-        # Only replace watermarks if we successfully created a resized image
-        if [[ "$WATERMARK_CREATED" == "true" && -f "$PLYMOUTH_LOGO" ]]; then
-            echo "  - Replacing Fedora watermarks in initrd (48x48)..."
-
-            # Only replace watermark files specifically (NOT logo files which may be larger)
-            sudo find "$INITRD_WORK/usr/share/plymouth/themes" -name "*watermark*" -type f 2>/dev/null | while read -r pngfile; do
-                echo "    Replacing: $pngfile"
-                sudo cp "$PLYMOUTH_LOGO" "$pngfile" 2>/dev/null || true
-            done
-
-            # Explicitly replace spinner and bgrt watermarks
-            [[ -d "$INITRD_WORK/usr/share/plymouth/themes/spinner" ]] && \
-                sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
-            [[ -d "$INITRD_WORK/usr/share/plymouth/themes/bgrt" ]] && \
-                sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
+        if command -v magick &> /dev/null && [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
+            magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
+                cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
+        elif command -v convert &> /dev/null && [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
+            convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
+                cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
         else
-            echo "  - WARNING: Could not resize logo for initrd, skipping watermark replacement"
+            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO" 2>/dev/null || true
         fi
+
+        # Replace watermarks in ALL Plymouth themes in initrd
+        echo "  - Replacing Fedora watermarks in initrd..."
+        sudo find "$INITRD_WORK/usr/share/plymouth/themes" -name "*.png" -type f 2>/dev/null | while read -r pngfile; do
+            filename=$(basename "$pngfile")
+            case "$filename" in
+                *watermark*|*logo*|*fedora*|*bgrt*)
+                    echo "    Replacing: $pngfile"
+                    sudo cp "$PLYMOUTH_LOGO" "$pngfile" 2>/dev/null || true
+                    ;;
+            esac
+        done
+
+        # Explicitly replace spinner and bgrt watermarks
+        [[ -d "$INITRD_WORK/usr/share/plymouth/themes/spinner" ]] && \
+            sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
+        [[ -d "$INITRD_WORK/usr/share/plymouth/themes/bgrt" ]] && \
+            sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
 
         rm -f "$PLYMOUTH_LOGO"
 
@@ -947,6 +953,9 @@ if [[ -d "$ROOTFS_DIR/home/liveuser" ]]; then
     [[ -d "$ROOTFS_DIR/etc/skel/.config/gtk-3.0" ]] && sudo cp -r "$ROOTFS_DIR/etc/skel/.config/gtk-3.0" "$ROOTFS_DIR/home/liveuser/.config/"
     [[ -d "$ROOTFS_DIR/etc/skel/.config/gtk-4.0" ]] && sudo cp -r "$ROOTFS_DIR/etc/skel/.config/gtk-4.0" "$ROOTFS_DIR/home/liveuser/.config/"
 
+    # Copy .dmrc for session selection
+    [[ -f "$ROOTFS_DIR/etc/skel/.dmrc" ]] && sudo cp "$ROOTFS_DIR/etc/skel/.dmrc" "$ROOTFS_DIR/home/liveuser/"
+
     sudo chown -R 1000:1000 "$ROOTFS_DIR/home/liveuser" 2>/dev/null || true
 fi
 
@@ -963,6 +972,12 @@ echo "=== Configuring Session Defaults ==="
 sudo mkdir -p "$ROOTFS_DIR/etc/sysconfig"
 echo "PREFERRED=plasma" | sudo tee "$ROOTFS_DIR/etc/sysconfig/desktop" >/dev/null 2>&1
 
+# Create .dmrc for skel (new users get this)
+sudo tee "$ROOTFS_DIR/etc/skel/.dmrc" >/dev/null <<'DMRC'
+[Desktop]
+Session=plasmax11
+DMRC
+
 # AccountsService for liveuser
 sudo mkdir -p "$ROOTFS_DIR/var/lib/AccountsService/users"
 sudo tee "$ROOTFS_DIR/var/lib/AccountsService/users/liveuser" >/dev/null <<'ACCT'
@@ -973,17 +988,45 @@ Icon=/usr/share/pixmaps/arxisos-logo.png
 SystemAccount=false
 ACCT
 
-# Hide GNOME sessions from SDDM
-for gnome_session in gnome gnome-xorg gnome-classic gnome-classic-xorg; do
-    if [[ -f "$ROOTFS_DIR/usr/share/xsessions/${gnome_session}.desktop" ]]; then
-        sudo sed -i 's/^NoDisplay=.*/NoDisplay=true/' "$ROOTFS_DIR/usr/share/xsessions/${gnome_session}.desktop" 2>/dev/null || \
-        echo "NoDisplay=true" | sudo tee -a "$ROOTFS_DIR/usr/share/xsessions/${gnome_session}.desktop" > /dev/null
-    fi
+# AGGRESSIVELY remove/disable GNOME sessions to prevent installer from selecting them
+echo "  - Removing GNOME session files..."
+for gnome_session in gnome gnome-xorg gnome-classic gnome-classic-xorg gnome-wayland; do
+    # Remove X sessions
+    sudo rm -f "$ROOTFS_DIR/usr/share/xsessions/${gnome_session}.desktop" 2>/dev/null || true
+    # Remove Wayland sessions
+    sudo rm -f "$ROOTFS_DIR/usr/share/wayland-sessions/${gnome_session}.desktop" 2>/dev/null || true
 done
 
-# Disable GNOME initial setup
+# Also remove any remaining GNOME session files
+sudo rm -f "$ROOTFS_DIR/usr/share/xsessions/gnome"*.desktop 2>/dev/null || true
+sudo rm -f "$ROOTFS_DIR/usr/share/wayland-sessions/gnome"*.desktop 2>/dev/null || true
+
+# Disable GNOME initial setup and tour
 sudo rm -f "$ROOTFS_DIR/etc/xdg/autostart/gnome-initial-setup-first-login.desktop" 2>/dev/null || true
 sudo rm -f "$ROOTFS_DIR/etc/xdg/autostart/gnome-welcome-tour.desktop" 2>/dev/null || true
+sudo rm -f "$ROOTFS_DIR/etc/xdg/autostart/org.gnome.Tour.desktop" 2>/dev/null || true
+
+# Set system-wide default session via XDG
+echo "  - Setting system-wide default session to Plasma..."
+sudo mkdir -p "$ROOTFS_DIR/etc/X11/xinit"
+echo "PREFERRED=plasmax11" | sudo tee "$ROOTFS_DIR/etc/X11/xinit/Xsession.d/50-default-session" >/dev/null 2>&1
+
+# Create AccountsService defaults for new users
+sudo mkdir -p "$ROOTFS_DIR/etc/accountsservice/user-templates"
+sudo tee "$ROOTFS_DIR/etc/accountsservice/user-templates/standard" >/dev/null <<'ACCT_TEMPLATE'
+[User]
+Session=plasmax11
+XSession=plasmax11
+SystemAccount=false
+ACCT_TEMPLATE
+
+# Also create a default user template
+sudo tee "$ROOTFS_DIR/var/lib/AccountsService/users/default" >/dev/null <<'ACCT_DEFAULT'
+[User]
+Session=plasmax11
+XSession=plasmax11
+SystemAccount=false
+ACCT_DEFAULT
 
 # ============================================
 # INSTALLER SHORTCUT

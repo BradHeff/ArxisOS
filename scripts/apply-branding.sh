@@ -326,40 +326,42 @@ if [ -f "$WORK_DIR/new_iso/images/pxeboot/initrd.img" ]; then
         sudo cp "$BRANDING_DIR/plymouth/arxisos/logo.png" "$INITRD_WORK/usr/share/plymouth/themes/arxisos/"
 
         # Also replace Fedora branding in existing themes (bgrt, spinner, etc.)
-        echo "  - Replacing Fedora watermarks in initrd Plymouth themes"
+        echo "  - Replacing Fedora logos in initrd Plymouth themes"
 
-        # Create small watermark for Plymouth (48x48 - appears at bottom of screen)
+        # Create smaller, elegant version of logo for Plymouth (128px wide)
         PLYMOUTH_LOGO="/tmp/arxisos-plymouth-logo.png"
-        WATERMARK_CREATED=false
-
-        if [ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]; then
-            echo "    Creating resized Plymouth watermark (48px)..."
-            if command -v magick &> /dev/null; then
-                magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO" 2>/dev/null && WATERMARK_CREATED=true
-            elif command -v convert &> /dev/null; then
-                convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO" 2>/dev/null && WATERMARK_CREATED=true
-            fi
+        if command -v magick &> /dev/null; then
+            echo "    Creating resized Plymouth logo (128px)..."
+            magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
+                cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
+        elif command -v convert &> /dev/null; then
+            echo "    Creating resized Plymouth logo (128px)..."
+            convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
+                cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
+        else
+            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
         fi
 
-        # Only replace if we successfully created a resized watermark
-        if [ "$WATERMARK_CREATED" = "true" ] && [ -f "$PLYMOUTH_LOGO" ]; then
-            # Only replace watermark files specifically (NOT logo files which may be larger)
-            sudo find "$INITRD_WORK/usr/share/plymouth/themes" -name "*watermark*" -type f | while read -r pngfile; do
-                echo "    Replacing: $pngfile"
-                sudo cp "$PLYMOUTH_LOGO" "$pngfile" 2>/dev/null || true
-            done
+        # Find ALL png files in plymouth themes and replace any that look like logos/watermarks
+        sudo find "$INITRD_WORK/usr/share/plymouth/themes" -name "*.png" -type f | while read -r pngfile; do
+            filename=$(basename "$pngfile")
+            # Replace watermark, logo, fedora-related images
+            case "$filename" in
+                *watermark*|*logo*|*fedora*|*bgrt*)
+                    echo "    Replacing: $pngfile"
+                    sudo cp "$PLYMOUTH_LOGO" "$pngfile" 2>/dev/null || true
+                    ;;
+            esac
+        done
 
-            # Explicitly replace spinner watermark (this is the "fedora" logo at bottom)
-            if [ -d "$INITRD_WORK/usr/share/plymouth/themes/spinner" ]; then
-                sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
-            fi
+        # Explicitly replace spinner watermark (this is the "fedora" logo at bottom)
+        if [ -d "$INITRD_WORK/usr/share/plymouth/themes/spinner" ]; then
+            sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
+        fi
 
-            # Replace bgrt watermark
-            if [ -d "$INITRD_WORK/usr/share/plymouth/themes/bgrt" ]; then
-                sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
-            fi
-        else
-            echo "    WARNING: Could not resize logo, skipping watermark replacement"
+        # Replace bgrt watermark
+        if [ -d "$INITRD_WORK/usr/share/plymouth/themes/bgrt" ]; then
+            sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
         fi
 
         # Clean up temp logo
@@ -559,34 +561,26 @@ ShowDelay=0
 DeviceTimeout=8
 PLYMOUTHCONF
 
-    # Create small watermark for Plymouth (48x48 - appears at bottom of screen)
+    # Create smaller, elegant version of logo for Plymouth (128px wide)
     PLYMOUTH_LOGO_ROOTFS="/tmp/arxisos-plymouth-logo-rootfs.png"
-    WATERMARK_CREATED=false
-
-    if [ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]; then
-        echo "    Creating resized Plymouth watermark (48px)..."
-        if command -v magick &> /dev/null; then
-            magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO_ROOTFS" 2>/dev/null && WATERMARK_CREATED=true
-        elif command -v convert &> /dev/null; then
-            convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 48x48 -background transparent -gravity center -extent 48x48 "$PLYMOUTH_LOGO_ROOTFS" 2>/dev/null && WATERMARK_CREATED=true
-        fi
+    if command -v magick &> /dev/null; then
+        magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO_ROOTFS" 2>/dev/null || \
+            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO_ROOTFS"
+    elif command -v convert &> /dev/null; then
+        convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO_ROOTFS" 2>/dev/null || \
+            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO_ROOTFS"
+    else
+        cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO_ROOTFS"
     fi
 
-    # Only replace if we successfully created a resized watermark
-    if [ "$WATERMARK_CREATED" = "true" ] && [ -f "$PLYMOUTH_LOGO_ROOTFS" ]; then
-        # Replace Fedora watermark with ArxisOS logo in spinner theme
-        if [ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]; then
-            sudo cp "$PLYMOUTH_LOGO_ROOTFS" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png"
-            echo "    - Replaced spinner watermark"
-        fi
+    # Replace Fedora watermark with ArxisOS logo in spinner theme
+    if [ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]; then
+        sudo cp "$PLYMOUTH_LOGO_ROOTFS" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
+    fi
 
-        # Also replace in bgrt theme (BIOS/UEFI logo fallback)
-        if [ -d "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt" ]; then
-            sudo cp "$PLYMOUTH_LOGO_ROOTFS" "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt/watermark.png"
-            echo "    - Replaced bgrt watermark"
-        fi
-    else
-        echo "    WARNING: Could not resize logo, skipping watermark replacement"
+    # Also replace in bgrt theme (BIOS/UEFI logo fallback)
+    if [ -d "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt" ]; then
+        sudo cp "$PLYMOUTH_LOGO_ROOTFS" "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
     fi
 
     rm -f "$PLYMOUTH_LOGO_ROOTFS"
