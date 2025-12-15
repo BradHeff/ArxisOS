@@ -1,26 +1,13 @@
 /*
- *   Copyright 2016 David Edmundson <davidedmundson@kde.org>
- *   Modified 2024 for ArxisOS - Plasma 6 compatibility
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU Library General Public License as
- *   published by the Free Software Foundation; either version 2 or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details
- *
- *   You should have received a copy of the GNU Library General Public
- *   License along with this program; if not, write to the
- *   Free Software Foundation, Inc.,
- *   51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- */
+    SPDX-FileCopyrightText: 2016 David Edmundson <davidedmundson@kde.org>
 
-import QtQuick
-import QtQuick.Controls
-import org.kde.kirigami as Kirigami
+    SPDX-License-Identifier: LGPL-2.0-or-later
+*/
+
+import QtQuick 2.15
+
+import org.kde.plasma.components 3.0 as PlasmaComponents3
+import org.kde.kirigami 2.20 as Kirigami
 
 Item {
     id: root
@@ -28,23 +15,59 @@ Item {
     property alias iconSource: icon.source
     property alias containsMouse: mouseArea.containsMouse
     property alias font: label.font
+    property alias labelRendering: label.renderType
+    property alias circleOpacity: iconCircle.opacity
+    property alias circleVisiblity: iconCircle.visible
+    property int fontSize: Kirigami.Theme.defaultFont.pointSize + 1
+    readonly property bool softwareRendering: GraphicsInfo.api === GraphicsInfo.Software
     signal clicked
 
     activeFocusOnTab: true
 
-    property int iconSize: Kirigami.Units.gridUnit * 2.5
+    property int iconSize: Kirigami.Units.gridUnit * 3
 
-    implicitWidth: Math.max(iconSize + Kirigami.Units.largeSpacing * 2, label.contentWidth)
+    implicitWidth: Math.max(iconSize + Kirigami.Units.gridUnit * 2, label.contentWidth)
     implicitHeight: iconSize + Kirigami.Units.smallSpacing + label.implicitHeight
 
-    opacity: activeFocus || containsMouse ? 1.5 : 0.97
+    opacity: activeFocus || containsMouse ? 1 : 0.85
     Behavior on opacity {
         PropertyAnimation { // OpacityAnimator makes it turn black at random intervals
-            duration: Kirigami.Units.longDuration * 2
+            duration: Kirigami.Units.longDuration
             easing.type: Easing.InOutQuad
         }
     }
 
+    Rectangle {
+        id: iconCircle
+        anchors.centerIn: icon
+        width: iconSize + Kirigami.Units.smallSpacing
+        height: width
+        radius: width / 2
+        color: softwareRendering ?  Kirigami.Theme.backgroundColor : Kirigami.Theme.textColor
+        opacity: root.activeFocus || containsMouse ? (softwareRendering ? 0.8 : 0.15) : (softwareRendering ? 0.6 : 0)
+        Behavior on opacity {
+            PropertyAnimation { // OpacityAnimator makes it turn black at random intervals
+                duration: Kirigami.Units.longDuration
+                easing.type: Easing.InOutQuad
+            }
+        }
+    }
+
+    Rectangle {
+        anchors.centerIn: iconCircle
+        width: iconCircle.width
+        height: width
+        radius: width / 2
+        scale: mouseArea.containsPress ? 1 : 0
+        color: Kirigami.Theme.textColor
+        opacity: 0.15
+        Behavior on scale {
+            PropertyAnimation {
+                duration: Kirigami.Units.shortDuration
+                easing.type: Easing.InOutQuart
+            }
+        }
+    }
 
     Kirigami.Icon {
         id: icon
@@ -54,23 +77,27 @@ Item {
         }
         width: iconSize
         height: iconSize
+        opacity: enabled ? root.opacity : 0.3
         active: mouseArea.containsMouse || root.activeFocus
     }
-    Label {
+
+    PlasmaComponents3.Label {
         id: label
         anchors {
             top: icon.bottom
-            topMargin: Kirigami.Units.smallSpacing
+            topMargin: softwareRendering ? Kirigami.Units.mediumSpacing : Kirigami.Units.smallSpacing
             left: parent.left
             right: parent.right
         }
+        style: softwareRendering ? Text.Outline : Text.Normal
+        styleColor: softwareRendering ? Kirigami.Theme.backgroundColor : "transparent" //no outline, doesn't matter
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignTop
         wrapMode: Text.WordWrap
         font.underline: root.activeFocus
         font.pointSize: config.fontSize
         font.family: config.font
-        color: activeFocus || containsMouse ? config.highlight_color : config.color
+        color:activeFocus || containsMouse ? config.highlight_color : config.color
     }
 
     MouseArea {

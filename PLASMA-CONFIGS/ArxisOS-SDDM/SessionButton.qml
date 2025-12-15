@@ -1,53 +1,53 @@
 /*
- *   Copyright 2016 David Edmundson <davidedmundson@kde.org>
- *   Modified 2024 for ArxisOS - Plasma 6 compatibility
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU Library General Public License as
- *   published by the Free Software Foundation; either version 2 or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details
- *
- *   You should have received a copy of the GNU Library General Public
- *   License along with this program; if not, write to the
- *   Free Software Foundation, Inc.,
- *   51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- */
+    SPDX-FileCopyrightText: 2016 David Edmundson <davidedmundson@kde.org>
+    SPDX-FileCopyrightText: 2022 Aleix Pol Gonzalez <aleixpol@kde.org>
 
-import QtQuick
-import QtQuick.Controls
-import org.kde.kirigami as Kirigami
+    SPDX-License-Identifier: LGPL-2.0-or-later
+*/
 
-Button {
+import QtQuick 2.15
+
+import org.kde.plasma.components 3.0 as PlasmaComponents
+import org.kde.kirigami 2.20 as Kirigami
+
+PlasmaComponents.ToolButton {
     id: root
+
     property int currentIndex: -1
 
-    visible: sessionModel.count > 1
-
-    text: i18nd("plasma_lookandfeel_org.kde.lookandfeel", "Desktop Session: %1", sessionModel.data(sessionModel.index(currentIndex, 0), Qt.DisplayRole) || "")
-
+    text: i18nd("plasma_lookandfeel_org.kde.lookandfeel", "Desktop Session: %1", instantiator.objectAt(currentIndex).text || "")
+    visible: menu.count > 1
     font.pointSize: config.fontSize
-
     Component.onCompleted: {
         currentIndex = sessionModel.lastIndex
     }
+    checkable: true
+    checked: menu.opened
+    onToggled: {
+        if (checked) {
+            menu.popup(root, 0, 0)
+        } else {
+            menu.dismiss()
+        }
+    }
 
-    onClicked: sessionMenu.open()
+    signal sessionChanged()
 
-    Menu {
-        id: sessionMenu
-        y: root.height
+    PlasmaComponents.Menu {
+        Kirigami.Theme.colorSet: Kirigami.Theme.Window
+        Kirigami.Theme.inherit: false
 
-        Repeater {
+        id: menu
+        Instantiator {
+            id: instantiator
             model: sessionModel
-            MenuItem {
+            onObjectAdded: (index, object) => menu.insertItem(index, object)
+            onObjectRemoved: (index, object) => menu.removeItem(object)
+            delegate: PlasmaComponents.MenuItem {
                 text: model.name
                 onTriggered: {
                     root.currentIndex = model.index
+                    sessionChanged()
                 }
             }
         }

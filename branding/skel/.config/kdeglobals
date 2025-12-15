@@ -108,16 +108,16 @@ ForegroundPositive=0,170,127
 ForegroundVisited=136,136,204
 
 [General]
-ColorScheme=PurPurNightColorscheme
+ColorScheme=PurPurDayColor
 ColorSchemeHash=9f63c7711a13123582e720791ea0f8c0172977d2
-Name=PurPurNight
+Name=PurPurDay
 widgetStyle=breeze
 
 [Icons]
-Theme=Vivid-Glassy-Dark-Icons
+Theme=Magna-Glassy-Light-Icons
 
 [KDE]
-LookAndFeelPackage=PurPurNight-Global-6
+LookAndFeelPackage=PurPurDay-Global-6
 widgetStyle=breeze
 
 [WM]

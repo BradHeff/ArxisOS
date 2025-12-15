@@ -2,7 +2,6 @@
  This file is part of the KDE project.
 
 Copyright (C) 2017 Martin Gräßlin <mgraesslin@kde.org>
-Modified 2024 for ArxisOS - Plasma 6 compatibility
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -18,8 +17,8 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 *********************************************************************/
 
-import QtQuick
-import QtQuick.VirtualKeyboard
+import QtQuick 2.5
+import QtQuick.VirtualKeyboard 2.1
 
 InputPanel {
     id: inputPanel

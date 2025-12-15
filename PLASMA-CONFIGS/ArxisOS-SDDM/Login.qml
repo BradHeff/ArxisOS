@@ -1,10 +1,12 @@
 import "components"
 
-import QtQuick
-import QtQuick.Layouts
-import QtQuick.Controls
+import QtQuick 2.2
+import QtQuick.Layouts 1.2
+import QtQuick.Controls 2.4
+//import QtQuick.Controls.Styles 1.4
 
-import org.kde.kirigami as Kirigami
+import org.kde.plasma.plasma5support 2.0 as PlasmaCore
+import org.kde.plasma.components 3.0 as PlasmaComponents
 
 SessionManagementScreen {
     id: root
@@ -17,7 +19,7 @@ SessionManagementScreen {
 
     //the y position that should be ensured visible when the on screen keyboard is visible
     property int visibleBoundary: mapFromItem(loginButton, 0, 0).y
-    onHeightChanged: visibleBoundary = mapFromItem(loginButton, 0, 0).y + loginButton.height + Kirigami.Units.smallSpacing
+    onHeightChanged: visibleBoundary = mapFromItem(loginButton, 0, 0).y + loginButton.height + units.smallSpacing
 
     signal loginRequest(string username, string password)
 
@@ -45,6 +47,8 @@ SessionManagementScreen {
     Input {
         id: userNameInput
         Layout.fillWidth: true
+        Layout.topMargin: 10
+        Layout.bottomMargin: 10
         text: lastUserName
         visible: showUsernamePrompt
         focus: showUsernamePrompt && !lastUserName //if there's a username prompt it gets focus first, otherwise password does
@@ -76,7 +80,7 @@ SessionManagementScreen {
 
         //if empty and left or right is pressed change selection in user switch
         //this cannot be in keys.onLeftPressed as then it doesn't reach the password box
-        Keys.onPressed: function(event) {
+        Keys.onPressed: {
             if (event.key == Qt.Key_Left && !text) {
                 userList.decrementCurrentIndex();
                 event.accepted = true
@@ -89,28 +93,29 @@ SessionManagementScreen {
 
         Connections {
             target: sddm
-            function onLoginFailed() {
+            onLoginFailed: {
                 passwordBox.selectAll()
                 passwordBox.forceActiveFocus()
             }
         }
     }
-    Button {
+    PlasmaComponents.Button {
         id: loginButton
         text: i18nd("plasma_lookandfeel_org.kde.lookandfeel", "Log In")
         enabled: passwordBox.text != ""
 
-        Layout.topMargin: 10
+        Layout.topMargin: 20
         Layout.bottomMargin: 10
-        Layout.fillWidth: true
-
+        Layout.preferredWidth: 150
+        Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                
         font.pointSize: config.fontSize
         font.family: config.font
 
         contentItem: Text {
             text: loginButton.text
             font: loginButton.font
-            opacity: enabled ? 1.0 : 0.3
+            opacity: enabled ? 1.0 : 0.6
             color: config.highlight_color
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -119,11 +124,12 @@ SessionManagementScreen {
 
         background: Rectangle {
             id: buttonBackground
-            implicitWidth: parent.width
-            implicitHeight: 40
-            radius: 20
-            color: config.selected_color
-            opacity: enabled ? 1.0 : 0.3
+            width: parent.width
+            height: 30
+            anchors.centerIn: parent
+            radius: width / 2
+            color: "#5858aa"
+            opacity: enabled ? 1.0 : 0.8
         }
 
         onClicked: startLogin();

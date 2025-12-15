@@ -339,15 +339,28 @@ done
 # Restart AccountsService to pick up changes
 systemctl restart accounts-daemon.service 2>/dev/null || true
 
-# Regenerate GRUB config with ArxisOS theme
-echo "$(date): Regenerating GRUB config" >> "$LOG"
+# Ensure GRUB theme is configured
+echo "$(date): Configuring GRUB theme" >> "$LOG"
 
-# Ensure GRUB theme exists
-if [ ! -d /boot/grub2/themes/arxisos ]; then
+# Check if GRUB theme exists
+if [ -d /boot/grub2/themes/arxisos ]; then
+    echo "$(date): ArxisOS GRUB theme found" >> "$LOG"
+
+    # Ensure /etc/default/grub has theme configured
+    if ! grep -q "GRUB_THEME=" /etc/default/grub 2>/dev/null; then
+        echo 'GRUB_THEME="/boot/grub2/themes/arxisos/theme.txt"' >> /etc/default/grub
+        echo "$(date): Added GRUB_THEME to /etc/default/grub" >> "$LOG"
+    fi
+    if ! grep -q "GRUB_TERMINAL_OUTPUT=" /etc/default/grub 2>/dev/null; then
+        echo 'GRUB_TERMINAL_OUTPUT="gfxterm"' >> /etc/default/grub
+        echo "$(date): Added GRUB_TERMINAL_OUTPUT to /etc/default/grub" >> "$LOG"
+    fi
+else
     echo "$(date): WARNING - ArxisOS GRUB theme not found at /boot/grub2/themes/arxisos" >> "$LOG"
 fi
 
-# Regenerate GRUB for BIOS
+# Regenerate GRUB config
+echo "$(date): Regenerating GRUB config" >> "$LOG"
 grub2-mkconfig -o /boot/grub2/grub.cfg 2>>"$LOG" || true
 
 # Regenerate GRUB for EFI (check multiple possible locations)
@@ -359,6 +372,25 @@ if [ -d /boot/efi/EFI/arxisos ]; then
     grub2-mkconfig -o /boot/efi/EFI/arxisos/grub.cfg 2>>"$LOG" || true
     echo "$(date): EFI GRUB config updated (arxisos path)" >> "$LOG"
 fi
+
+# Ensure SDDM theme is configured
+echo "$(date): Configuring SDDM theme" >> "$LOG"
+mkdir -p /etc/sddm.conf.d
+cat > /etc/sddm.conf.d/arxisos.conf << SDDMCONF
+[Theme]
+Current=arxisos
+CursorTheme=oreo_white_cursors
+
+[General]
+DefaultSession=plasmax11.desktop
+
+[X11]
+ServerArguments=-nolisten tcp
+
+[Wayland]
+SessionDir=/usr/share/wayland-sessions
+SDDMCONF
+echo "$(date): SDDM config written" >> "$LOG"
 
 # Regenerate initramfs with Plymouth
 echo "$(date): Regenerating initramfs with Plymouth" >> "$LOG"
@@ -377,6 +409,10 @@ FIRSTBOOT_SCRIPT
 
 sudo chmod +x "$ROOTFS_DIR/usr/local/bin/arxisos-first-boot.sh"
 sudo chroot "$ROOTFS_DIR" systemctl enable arxisos-first-boot.service 2>/dev/null || true
+
+# Also create symlink manually as backup (in case chroot systemctl fails)
+sudo mkdir -p "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants"
+sudo ln -sf /etc/systemd/system/arxisos-first-boot.service "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/arxisos-first-boot.service" 2>/dev/null || true
 
 # ============================================
 # UNMOUNT BIND MOUNTS (chroot operations done)
@@ -418,29 +454,54 @@ DeviceTimeout=8
 PLYCONF
 
     # Replace watermarks in spinner and bgrt themes with ArxisOS logo
+    # Use pre-generated 128x128 watermark (original is 980x980 which fills entire screen)
     echo "  - Replacing Plymouth watermarks..."
-    PLYMOUTH_LOGO="/tmp/arxisos-plymouth-watermark.png"
-    if command -v magick &> /dev/null && [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
-        magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
-            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
-    elif command -v convert &> /dev/null && [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
-        convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
-            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
-    else
-        cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO" 2>/dev/null || true
+    PLYMOUTH_LOGO=""
+
+    # Prefer pre-generated 128x128 watermark (no resize needed, guaranteed correct size)
+    if [[ -f "$BRANDING_DIR/logos/arxisos-watermark-128.png" ]]; then
+        PLYMOUTH_LOGO="$BRANDING_DIR/logos/arxisos-watermark-128.png"
+        echo "    - Using pre-generated 128x128 watermark"
+    elif [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
+        # Fallback: try to resize the original logo
+        PLYMOUTH_LOGO="/tmp/arxisos-plymouth-watermark.png"
+        RESIZE_SUCCESS=false
+        if command -v magick &> /dev/null; then
+            magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null && RESIZE_SUCCESS=true
+        elif command -v convert &> /dev/null; then
+            convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null && RESIZE_SUCCESS=true
+        fi
+        if [[ "$RESIZE_SUCCESS" != "true" ]]; then
+            echo "    - WARNING: Failed to resize logo, Plymouth watermark not replaced"
+            PLYMOUTH_LOGO=""
+        else
+            echo "    - Resized logo to 128x128"
+        fi
     fi
 
-    # Replace in spinner theme
-    if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]]; then
-        sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
+    # Only replace if we have a valid watermark
+    if [[ -n "$PLYMOUTH_LOGO" && -f "$PLYMOUTH_LOGO" ]]; then
+        # Replace in spinner theme
+        if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]]; then
+            sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png"
+            echo "    - Replaced spinner watermark"
+        fi
+
+        # Replace in bgrt theme
+        if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt" ]]; then
+            sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt/watermark.png"
+            echo "    - Replaced bgrt watermark"
+        fi
+
+        # Also replace the logo.png in arxisos theme (used during shutdown)
+        if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/arxisos" ]]; then
+            sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/arxisos/logo.png"
+            echo "    - Replaced arxisos theme logo"
+        fi
     fi
 
-    # Replace in bgrt theme
-    if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt" ]]; then
-        sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
-    fi
-
-    rm -f "$PLYMOUTH_LOGO"
+    # Clean up temp file if we created one
+    [[ "$PLYMOUTH_LOGO" == "/tmp/"* ]] && rm -f "$PLYMOUTH_LOGO"
 
     # Configure Plymouth for installed system
     echo "  - Configuring Plymouth for installed system..."
@@ -483,37 +544,48 @@ if [[ -f "$INITRD_PATH" ]]; then
         sudo mkdir -p "$INITRD_WORK/usr/share/plymouth/themes/arxisos"
         sudo cp -r "$BRANDING_DIR/plymouth/arxisos/"* "$INITRD_WORK/usr/share/plymouth/themes/arxisos/" 2>/dev/null || true
 
-        # Create resized logo for Plymouth watermark
-        PLYMOUTH_LOGO="/tmp/arxisos-initrd-logo.png"
-        if command -v magick &> /dev/null && [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
-            magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
-                cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
-        elif command -v convert &> /dev/null && [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
-            convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || \
-                cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO"
-        else
-            cp "$BRANDING_DIR/logos/arxisos-logo.png" "$PLYMOUTH_LOGO" 2>/dev/null || true
+        # Get Plymouth watermark - prefer pre-generated 128x128
+        PLYMOUTH_LOGO=""
+        if [[ -f "$BRANDING_DIR/logos/arxisos-watermark-128.png" ]]; then
+            PLYMOUTH_LOGO="$BRANDING_DIR/logos/arxisos-watermark-128.png"
+            echo "    - Using pre-generated 128x128 watermark for initrd"
+        elif [[ -f "$BRANDING_DIR/logos/arxisos-logo.png" ]]; then
+            # Fallback: try to resize the original logo
+            PLYMOUTH_LOGO="/tmp/arxisos-initrd-logo.png"
+            if command -v magick &> /dev/null; then
+                magick "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || PLYMOUTH_LOGO=""
+            elif command -v convert &> /dev/null; then
+                convert "$BRANDING_DIR/logos/arxisos-logo.png" -resize 128x128 -background transparent -gravity center "$PLYMOUTH_LOGO" 2>/dev/null || PLYMOUTH_LOGO=""
+            else
+                PLYMOUTH_LOGO=""
+            fi
+            [[ -n "$PLYMOUTH_LOGO" && -f "$PLYMOUTH_LOGO" ]] && echo "    - Resized logo to 128x128 for initrd"
         fi
 
-        # Replace watermarks in ALL Plymouth themes in initrd
-        echo "  - Replacing Fedora watermarks in initrd..."
-        sudo find "$INITRD_WORK/usr/share/plymouth/themes" -name "*.png" -type f 2>/dev/null | while read -r pngfile; do
-            filename=$(basename "$pngfile")
-            case "$filename" in
-                *watermark*|*logo*|*fedora*|*bgrt*)
-                    echo "    Replacing: $pngfile"
-                    sudo cp "$PLYMOUTH_LOGO" "$pngfile" 2>/dev/null || true
-                    ;;
-            esac
-        done
+        # Replace watermarks in ALL Plymouth themes in initrd (only if we have a valid watermark)
+        if [[ -n "$PLYMOUTH_LOGO" && -f "$PLYMOUTH_LOGO" ]]; then
+            echo "  - Replacing Fedora watermarks in initrd..."
+            sudo find "$INITRD_WORK/usr/share/plymouth/themes" -name "*.png" -type f 2>/dev/null | while read -r pngfile; do
+                filename=$(basename "$pngfile")
+                case "$filename" in
+                    *watermark*|*logo*|*fedora*|*bgrt*)
+                        echo "    Replacing: $pngfile"
+                        sudo cp "$PLYMOUTH_LOGO" "$pngfile" 2>/dev/null || true
+                        ;;
+                esac
+            done
 
-        # Explicitly replace spinner and bgrt watermarks
-        [[ -d "$INITRD_WORK/usr/share/plymouth/themes/spinner" ]] && \
-            sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
-        [[ -d "$INITRD_WORK/usr/share/plymouth/themes/bgrt" ]] && \
-            sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
+            # Explicitly replace spinner and bgrt watermarks
+            [[ -d "$INITRD_WORK/usr/share/plymouth/themes/spinner" ]] && \
+                sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/spinner/watermark.png" 2>/dev/null || true
+            [[ -d "$INITRD_WORK/usr/share/plymouth/themes/bgrt" ]] && \
+                sudo cp "$PLYMOUTH_LOGO" "$INITRD_WORK/usr/share/plymouth/themes/bgrt/watermark.png" 2>/dev/null || true
 
-        rm -f "$PLYMOUTH_LOGO"
+            # Clean up temp file if we created one
+            [[ "$PLYMOUTH_LOGO" == "/tmp/"* ]] && rm -f "$PLYMOUTH_LOGO"
+        else
+            echo "  - WARNING: No valid watermark available for initrd"
+        fi
 
         # Update Plymouth config in initrd
         sudo mkdir -p "$INITRD_WORK/etc/plymouth"
@@ -768,7 +840,13 @@ echo ""
 echo "=== Applying Plasma Themes (PurPurDay) ==="
 
 echo "  - Wallpapers..."
-copy_if_exists "$BRANDING_DIR/wallpapers" "$ROOTFS_DIR/usr/share/wallpapers/arxisos"
+# Copy ArxisOS wallpaper package (proper Plasma wallpaper structure)
+if [[ -d "$BRANDING_DIR/wallpapers/ArxisOS" ]]; then
+    sudo mkdir -p "$ROOTFS_DIR/usr/share/wallpapers/ArxisOS"
+    sudo cp -r "$BRANDING_DIR/wallpapers/ArxisOS/"* "$ROOTFS_DIR/usr/share/wallpapers/ArxisOS/"
+fi
+# Also copy standalone wallpapers for compatibility
+copy_if_exists "$BRANDING_DIR/wallpapers/default.png" "$ROOTFS_DIR/usr/share/wallpapers/ArxisOS.png"
 
 echo "  - Logos..."
 copy_if_exists "$BRANDING_DIR/logos" "$ROOTFS_DIR/usr/share/arxisos/logos"
@@ -780,9 +858,13 @@ if [[ -d "$BRANDING_DIR/icons/hicolor" ]]; then
     sudo cp -r "$BRANDING_DIR/icons/hicolor/"* "$ROOTFS_DIR/usr/share/icons/hicolor/"
 fi
 copy_if_exists "$BRANDING_DIR/icons/Vivid-Glassy-Dark-Icons" "$ROOTFS_DIR/usr/share/icons/Vivid-Glassy-Dark-Icons"
+copy_if_exists "$BRANDING_DIR/icons/Magna-Glassy-Light-Icons" "$ROOTFS_DIR/usr/share/icons/Magna-Glassy-Light-Icons"
 
-echo "  - Cursor theme..."
+echo "  - Cursor themes..."
 copy_if_exists "$BRANDING_DIR/cursors/oreo_white_cursors" "$ROOTFS_DIR/usr/share/icons/oreo_white_cursors"
+copy_if_exists "$BRANDING_DIR/cursors/Bibata-Modern-Ice-Regular-Windows" "$ROOTFS_DIR/usr/share/icons/Bibata-Modern-Ice-Regular-Windows"
+copy_if_exists "$BRANDING_DIR/cursors/Bibata-Modern-Ice-Large-Windows" "$ROOTFS_DIR/usr/share/icons/Bibata-Modern-Ice-Large-Windows"
+copy_if_exists "$BRANDING_DIR/cursors/Bibata-Modern-Ice-Extra-Large-Windows" "$ROOTFS_DIR/usr/share/icons/Bibata-Modern-Ice-Extra-Large-Windows"
 
 echo "  - GTK theme (PurPurDay)..."
 copy_if_exists "$BRANDING_DIR/gtk-themes/PurPurDay-GTK" "$ROOTFS_DIR/usr/share/themes/PurPurDay-GTK"
@@ -795,10 +877,10 @@ echo "  - Plasma desktop theme (PurPurDay)..."
 copy_if_exists "$BRANDING_DIR/plasma-themes/PurPurDay-Plasma" "$ROOTFS_DIR/usr/share/plasma/desktoptheme/PurPurDay-Plasma"
 
 echo "  - Color scheme..."
-# Copy existing color scheme or create from Global theme defaults
-if [[ -f "$PLASMA_CFG_DIR/Archive-local-share/color-schemes/PurPurDayColor.colors" ]]; then
-    copy_if_exists "$PLASMA_CFG_DIR/Archive-local-share/color-schemes/PurPurDayColor.colors" \
-        "$ROOTFS_DIR/usr/share/color-schemes/PurPurDayColor.colors"
+# Copy PurPurDay color scheme from Plasma theme
+if [[ -f "$BRANDING_DIR/plasma-themes/PurPurDay-Plasma/colors" ]]; then
+    sudo mkdir -p "$ROOTFS_DIR/usr/share/color-schemes"
+    sudo cp "$BRANDING_DIR/plasma-themes/PurPurDay-Plasma/colors" "$ROOTFS_DIR/usr/share/color-schemes/PurPurDayColor.colors"
 fi
 
 echo "  - Aurorae window decoration (PurPurDay)..."
@@ -905,7 +987,7 @@ sudo tee "$ROOTFS_DIR/etc/skel/.config/kdeglobals" > /dev/null << 'KDEGLOBALS'
 widgetStyle=breeze
 
 [Icons]
-Theme=Vivid-Glassy-Dark-Icons
+Theme=Magna-Glassy-Light-Icons
 KDEGLOBALS
 
 # kcminputrc - Cursor theme
@@ -939,6 +1021,24 @@ Theme=PurPurDay-Splash-6
 Engine=KSplashQML
 KSPLASH
 
+# Create minimal desktop wallpaper config (desktop containment only, NOT panel)
+# This sets the ArxisOS wallpaper without affecting panel creation
+echo "  - Setting ArxisOS wallpaper as default..."
+sudo tee "$ROOTFS_DIR/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc" > /dev/null << 'PLASMADESKTOP'
+[Containments][1]
+activityId=
+formfactor=0
+immutability=1
+lastScreen=0
+location=0
+plugin=org.kde.plasma.folder
+wallpaperplugin=org.kde.image
+
+[Containments][1][Wallpaper][org.kde.image][General]
+Image=file:///usr/share/wallpapers/ArxisOS/contents/images/3840x2160.png
+PreviewImage=file:///usr/share/wallpapers/ArxisOS/contents/images/3840x2160.png
+PLASMADESKTOP
+
 # Copy configs to liveuser
 if [[ -d "$ROOTFS_DIR/home/liveuser" ]]; then
     echo "  - Setting up liveuser with PurPurDay theme..."
@@ -948,6 +1048,7 @@ if [[ -d "$ROOTFS_DIR/home/liveuser" ]]; then
     sudo cp "$ROOTFS_DIR/etc/skel/.config/kcminputrc" "$ROOTFS_DIR/home/liveuser/.config/"
     sudo cp "$ROOTFS_DIR/etc/skel/.config/kwinrc" "$ROOTFS_DIR/home/liveuser/.config/"
     sudo cp "$ROOTFS_DIR/etc/skel/.config/ksplashrc" "$ROOTFS_DIR/home/liveuser/.config/"
+    sudo cp "$ROOTFS_DIR/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc" "$ROOTFS_DIR/home/liveuser/.config/"
 
     # Copy GTK configs too
     [[ -d "$ROOTFS_DIR/etc/skel/.config/gtk-3.0" ]] && sudo cp -r "$ROOTFS_DIR/etc/skel/.config/gtk-3.0" "$ROOTFS_DIR/home/liveuser/.config/"
@@ -960,7 +1061,10 @@ if [[ -d "$ROOTFS_DIR/home/liveuser" ]]; then
 fi
 
 echo "  - Theme configs created (Plasma style, icons, cursors, decoration, splash)"
-echo "  - NOT applied: Global theme (layout), wallpaper (uses Plasma default)"
+
+# NOTE: Removed autostart layout application - it was breaking the working panel setup
+# The panel is already configured correctly via Plasma defaults + skel configs
+echo "  - Panel configured via Plasma defaults (no autostart override needed)"
 
 # ============================================
 # SESSION AND DESKTOP HINTS
@@ -1008,8 +1112,8 @@ sudo rm -f "$ROOTFS_DIR/etc/xdg/autostart/org.gnome.Tour.desktop" 2>/dev/null ||
 
 # Set system-wide default session via XDG
 echo "  - Setting system-wide default session to Plasma..."
-sudo mkdir -p "$ROOTFS_DIR/etc/X11/xinit"
-echo "PREFERRED=plasmax11" | sudo tee "$ROOTFS_DIR/etc/X11/xinit/Xsession.d/50-default-session" >/dev/null 2>&1
+sudo mkdir -p "$ROOTFS_DIR/etc/X11/xinit/Xsession.d"
+echo "PREFERRED=plasmax11" | sudo tee "$ROOTFS_DIR/etc/X11/xinit/Xsession.d/50-default-session" >/dev/null
 
 # Create AccountsService defaults for new users
 sudo mkdir -p "$ROOTFS_DIR/etc/accountsservice/user-templates"

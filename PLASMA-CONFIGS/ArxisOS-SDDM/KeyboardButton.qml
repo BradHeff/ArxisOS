@@ -1,32 +1,59 @@
-import QtQuick
-import QtQuick.Controls
-import org.kde.kirigami as Kirigami
+/*
+    SPDX-FileCopyrightText: 2016 David Edmundson <davidedmundson@kde.org>
+    SPDX-FileCopyrightText: 2022 Aleix Pol Gonzalez <aleixpol@kde.org>
 
-Button {
-    id: keyboardButton
+    SPDX-License-Identifier: LGPL-2.0-or-later
+*/
 
-    property int currentIndex: -1
+import QtQuick 2.15
 
-    text: i18nd("plasma_lookandfeel_org.kde.lookandfeel", "Keyboard Layout: %1", keyboard.layouts[currentIndex] ? keyboard.layouts[currentIndex].shortName : "")
-    font.pointSize: config.fontSize
+import org.kde.plasma.components 3.0 as PlasmaComponents
+import org.kde.kirigami 2.20 as Kirigami
 
+PlasmaComponents.ToolButton {
+    id: root
+
+    property int currentIndex: keyboard.currentLayout
+    onCurrentIndexChanged: keyboard.currentLayout = currentIndex
+
+    text: i18nd("plasma_lookandfeel_org.kde.lookandfeel", "Keyboard Layout: %1", keyboard.layouts[currentIndex].longName)
     visible: keyboard.layouts.length > 1
 
-    Component.onCompleted: currentIndex = Qt.binding(function() {return keyboard.currentLayout});
+    checkable: true
+    checked: menu.opened
+    onToggled: {
+        if (checked) {
+            menu.popup(root, 0, 0)
+        } else {
+            menu.dismiss()
+        }
+    }
 
-    onClicked: keyboardMenu.open()
+    signal keyboardLayoutChanged()
 
-    Menu {
-        id: keyboardMenu
-        y: keyboardButton.height
+    PlasmaComponents.Menu {
+        id: menu
+        Kirigami.Theme.colorSet: Kirigami.Theme.Window
+        Kirigami.Theme.inherit: false
 
-        Repeater {
-            model: keyboard.layouts
-            MenuItem {
+        onAboutToShow: {
+            if (instantiator.model === null) {
+                let layouts = keyboard.layouts;
+                layouts.sort((a, b) => a.longName.localeCompare(b.longName));
+                instantiator.model = layouts;
+            }
+        }
+
+        Instantiator {
+            id: instantiator
+            model: null
+            onObjectAdded: (index, object) => menu.insertItem(index, object)
+            onObjectRemoved: (index, object) => menu.removeItem(object)
+            delegate: PlasmaComponents.MenuItem {
                 text: modelData.longName
                 onTriggered: {
-                    keyboard.currentLayout = index
-                    keyboardButton.currentIndex = index
+                    keyboard.currentLayout = keyboard.layouts.indexOf(modelData)
+                    root.keyboardLayoutChanged()
                 }
             }
         }

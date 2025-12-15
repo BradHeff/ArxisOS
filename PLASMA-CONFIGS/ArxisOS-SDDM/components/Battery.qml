@@ -1,53 +1,58 @@
 /*
- *   Copyright 2016 Kai Uwe Broulik <kde@privat.broulik.de>
- *   Modified 2024 for ArxisOS - Plasma 6 compatibility
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU Library General Public License as
- *   published by the Free Software Foundation; either version 2 or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details
- *
- *   You should have received a copy of the GNU Library General Public
- *   License along with this program; if not, write to the
- *   Free Software Foundation, Inc.,
- *   51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- */
+    SPDX-FileCopyrightText: 2016 Kai Uwe Broulik <kde@privat.broulik.de>
 
-import QtQuick
-import QtQuick.Controls
-import org.kde.plasma.plasma5support as Plasma5Support
-import org.kde.plasma.workspace.components as PW
-import org.kde.kirigami as Kirigami
+    SPDX-License-Identifier: LGPL-2.0-or-later
+*/
 
-Row {
+import QtQuick 2.15
+import QtQuick.Layouts 1.15
+
+import org.kde.plasma.components 3.0 as PlasmaComponents3
+import org.kde.plasma.workspace.components 2.0 as PW
+import org.kde.plasma.plasma5support 2.0 as P5Support
+import org.kde.kirigami 2.20 as Kirigami
+
+RowLayout {
+    id: root
+
+    property int fontSize: Kirigami.Theme.defaultFont.pointSize
+
+    function getOrDefault(source /*object?*/, prop /*string*/, fallback /*T*/) /*-> T*/ {
+        return (source !== null && source !== undefined && source.hasOwnProperty(prop))
+            ? source[prop] : fallback;
+    }
+
+    readonly property var acAdapter: pmSource.data["AC Adapter"]
+    readonly property var battery: pmSource.data["Battery"]
+
+    readonly property bool pluggedIn: getOrDefault(acAdapter, "Plugged in", false)
+    readonly property bool hasBattery: getOrDefault(battery, "Has Battery", false)
+    readonly property int percent: getOrDefault(battery, "Percent", 0)
+
     spacing: Kirigami.Units.smallSpacing
-    visible: pmSource.data["Battery"]["Has Cumulative"]
+    visible: getOrDefault(battery, "Has Cumulative", false)
 
-    Plasma5Support.DataSource {
+    P5Support.DataSource {
         id: pmSource
         engine: "powermanagement"
         connectedSources: ["Battery", "AC Adapter"]
     }
 
     PW.BatteryIcon {
-        id: battery
-        hasBattery: pmSource.data["Battery"]["Has Battery"] || false
-        percent: pmSource.data["Battery"]["Percent"] || 0
-        pluggedIn: pmSource.data["AC Adapter"] ? pmSource.data["AC Adapter"]["Plugged in"] : false
+        pluggedIn: root.pluggedIn
+        hasBattery: root.hasBattery
+        percent: root.percent
 
-        height: batteryLabel.height
-        width: height
+        Layout.preferredHeight: Math.max(Kirigami.Units.iconSizes.medium, batteryLabel.implicitHeight)
+        Layout.preferredWidth: Layout.preferredHeight
+        Layout.alignment: Qt.AlignVCenter
     }
 
-    Label {
+    PlasmaComponents3.Label {
         id: batteryLabel
-        height: undefined
-        text: i18nd("plasma_lookandfeel_org.kde.lookandfeel","%1%", battery.percent)
-        Accessible.name: i18nd("plasma_lookandfeel_org.kde.lookandfeel","Battery at %1%", battery.percent)
+        font.pointSize: root.fontSize
+        text: i18nd("plasma_lookandfeel_org.kde.lookandfeel", "%1%", root.percent)
+        Accessible.name: i18nd("plasma_lookandfeel_org.kde.lookandfeel", "Battery at %1%", root.percent)
+        Layout.alignment: Qt.AlignVCenter
     }
 }

@@ -11,13 +11,13 @@ LayoutName=org.kde.breeze.desktop
 ColorScheme=PurPurDayColor
 
 [kdeglobals][Icons]
-Theme=Vivid-Glassy-Dark-Icons
+Theme=Magna-Glassy-Light-Icons
 
 [kcminputrc][Mouse]
 cursorTheme=oreo_white_cursors
 
 [Wallpaper]
-Image=PurPurDay
+Image=ArxisOS
 
 [plasmarc][Theme]
 name=PurPurDay-Plasma
@@ -28,3 +28,6 @@ theme=__aurorae__svg__PurPurDay-Aurorae-6
 
 [KSplash]
 Theme=PurPurDay-Splash-6
+
+[Desktop]
+Layout=org.kde.plasma.desktop-layout.js
