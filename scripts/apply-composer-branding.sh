@@ -158,6 +158,8 @@ sudo chroot "$ROOTFS_DIR" dnf install -y --releasever=43 --allowerasing \
     avahi avahi-tools switcheroo-control ModemManager \
     dbus-broker systemd-oomd-defaults \
     selinux-policy-targeted policycoreutils policycoreutils-python-utils \
+    remmina remmina-plugins-rdp remmina-plugins-vnc remmina-plugins-spice \
+    firefox libreoffice flatpak fastfetch htop git vim-enhanced wget2 curl \
     || echo "Warning: Some packages may have failed"
 
 echo "Removing GNOME packages..."
@@ -317,6 +319,24 @@ if id liveuser &>/dev/null; then
     rm -f /var/lib/AccountsService/users/liveuser 2>/dev/null || true
 fi
 
+# Remove installer desktop entry and shortcuts (only needed for live session)
+echo "$(date): Removing installer desktop entries" >> "$LOG"
+rm -f /usr/share/applications/arxisos-installer.desktop 2>/dev/null || true
+rm -f /usr/share/applications/liveinst.desktop 2>/dev/null || true
+rm -f /etc/skel/Desktop/arxisos-installer.desktop 2>/dev/null || true
+rm -f /etc/skel/Desktop/liveinst.desktop 2>/dev/null || true
+# Remove from any existing user desktops
+for user_home in /home/*; do
+    username=$(basename "$user_home")
+    if [ -d "$user_home/Desktop" ] && [ "$username" != "liveuser" ]; then
+        rm -f "$user_home/Desktop/arxisos-installer.desktop" 2>/dev/null || true
+        rm -f "$user_home/Desktop/liveinst.desktop" 2>/dev/null || true
+        rm -f "$user_home/Desktop/Install ArxisOS.desktop" 2>/dev/null || true
+        echo "$(date): Removed installer shortcut from $username desktop" >> "$LOG"
+    fi
+done
+echo "$(date): Installer desktop entries removed" >> "$LOG"
+
 # Remove live autologin config
 rm -f /etc/sddm.conf.d/live-autologin.conf 2>/dev/null || true
 
@@ -364,18 +384,43 @@ systemctl restart accounts-daemon.service 2>/dev/null || true
 # Ensure GRUB theme is configured
 echo "$(date): Configuring GRUB theme" >> "$LOG"
 
-# Check if GRUB theme exists
+# Check if GRUB theme exists, if not try to copy from known locations
+if [ ! -d /boot/grub2/themes/arxisos ]; then
+    echo "$(date): ArxisOS GRUB theme not found, attempting to install" >> "$LOG"
+
+    # Try to copy from squashfs source locations
+    for src in /usr/share/grub/themes/arxisos /usr/share/arxisos/grub/arxisos; do
+        if [ -d "$src" ]; then
+            mkdir -p /boot/grub2/themes
+            cp -r "$src" /boot/grub2/themes/arxisos
+            echo "$(date): Copied GRUB theme from $src" >> "$LOG"
+            break
+        fi
+    done
+fi
+
+# Check again if GRUB theme exists now
 if [ -d /boot/grub2/themes/arxisos ]; then
     echo "$(date): ArxisOS GRUB theme found" >> "$LOG"
 
     # Ensure /etc/default/grub has theme configured
-    if ! grep -q "GRUB_THEME=" /etc/default/grub 2>/dev/null; then
-        echo 'GRUB_THEME="/boot/grub2/themes/arxisos/theme.txt"' >> /etc/default/grub
-        echo "$(date): Added GRUB_THEME to /etc/default/grub" >> "$LOG"
-    fi
-    if ! grep -q "GRUB_TERMINAL_OUTPUT=" /etc/default/grub 2>/dev/null; then
-        echo 'GRUB_TERMINAL_OUTPUT="gfxterm"' >> /etc/default/grub
-        echo "$(date): Added GRUB_TERMINAL_OUTPUT to /etc/default/grub" >> "$LOG"
+    # Remove any existing entries first to avoid duplicates
+    sed -i '/^GRUB_THEME=/d' /etc/default/grub 2>/dev/null || true
+    sed -i '/^GRUB_TERMINAL_OUTPUT=/d' /etc/default/grub 2>/dev/null || true
+    sed -i '/^GRUB_GFXMODE=/d' /etc/default/grub 2>/dev/null || true
+    sed -i '/^GRUB_GFXPAYLOAD_LINUX=/d' /etc/default/grub 2>/dev/null || true
+
+    # Add theme configuration
+    echo 'GRUB_THEME="/boot/grub2/themes/arxisos/theme.txt"' >> /etc/default/grub
+    echo 'GRUB_TERMINAL_OUTPUT="gfxterm"' >> /etc/default/grub
+    echo 'GRUB_GFXMODE="auto"' >> /etc/default/grub
+    echo 'GRUB_GFXPAYLOAD_LINUX="keep"' >> /etc/default/grub
+    echo "$(date): Added GRUB theme configuration to /etc/default/grub" >> "$LOG"
+
+    # Ensure rhgb quiet is in kernel cmdline for Plymouth splash
+    if ! grep -q "rhgb" /etc/default/grub 2>/dev/null; then
+        sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 rhgb quiet"/' /etc/default/grub 2>>"$LOG" || true
+        echo "$(date): Added rhgb quiet to kernel cmdline" >> "$LOG"
     fi
 else
     echo "$(date): WARNING - ArxisOS GRUB theme not found at /boot/grub2/themes/arxisos" >> "$LOG"
@@ -454,24 +499,47 @@ echo "$(date): SDDM config written" >> "$LOG"
 # Regenerate initramfs with Plymouth and ArxisOS branding
 echo "$(date): Regenerating initramfs with Plymouth" >> "$LOG"
 
+# Ensure ArxisOS watermark is in place for spinner theme
+# Check for the correct 128x128 watermark and copy to all Plymouth themes
+if [ -f /usr/share/arxisos/logos/arxisos-watermark-128.png ]; then
+    WATERMARK_SRC="/usr/share/arxisos/logos/arxisos-watermark-128.png"
+elif [ -f /usr/share/pixmaps/arxisos-watermark-128.png ]; then
+    WATERMARK_SRC="/usr/share/pixmaps/arxisos-watermark-128.png"
+else
+    WATERMARK_SRC=""
+fi
+
+if [ -n "$WATERMARK_SRC" ] && [ -f "$WATERMARK_SRC" ]; then
+    echo "$(date): Found ArxisOS watermark at $WATERMARK_SRC" >> "$LOG"
+    # Replace watermarks in all Plymouth themes
+    for theme_dir in /usr/share/plymouth/themes/*/; do
+        [ -d "$theme_dir" ] || continue
+        if [ -f "${theme_dir}watermark.png" ]; then
+            cp "$WATERMARK_SRC" "${theme_dir}watermark.png" 2>>"$LOG" || true
+            echo "$(date): Replaced watermark in $(basename "$theme_dir")" >> "$LOG"
+        fi
+    done
+else
+    echo "$(date): No ArxisOS watermark found, Plymouth may show default" >> "$LOG"
+fi
+
 # Use spinner theme with ArxisOS watermark (more reliable than custom theme)
 if command -v plymouth-set-default-theme >/dev/null 2>&1; then
     plymouth-set-default-theme spinner 2>>"$LOG" || true
     echo "$(date): Plymouth theme set to spinner" >> "$LOG"
 fi
 
-# Rebuild initramfs for current kernel
-KERNEL_VER=$(uname -r)
-if [ -n "$KERNEL_VER" ] && [ -f "/boot/vmlinuz-${KERNEL_VER}" ]; then
-    echo "$(date): Rebuilding initramfs for kernel $KERNEL_VER" >> "$LOG"
-    dracut -f "/boot/initramfs-${KERNEL_VER}.img" "$KERNEL_VER" 2>>"$LOG" || true
-    echo "$(date): initramfs regenerated for kernel $KERNEL_VER" >> "$LOG"
-else
-    # Regenerate for all installed kernels
-    echo "$(date): Rebuilding initramfs for all kernels" >> "$LOG"
-    dracut -f 2>>"$LOG" || true
-    echo "$(date): initramfs regenerated for all kernels" >> "$LOG"
-fi
+# Rebuild initramfs for all installed kernels (to include new watermarks)
+echo "$(date): Rebuilding initramfs for all kernels" >> "$LOG"
+for kernel in /boot/vmlinuz-*; do
+    [ -f "$kernel" ] || continue
+    kver=$(basename "$kernel" | sed 's/vmlinuz-//')
+    if [ -n "$kver" ] && [ -f "/lib/modules/$kver/modules.dep" ]; then
+        echo "$(date): Rebuilding initramfs for kernel $kver" >> "$LOG"
+        dracut -f "/boot/initramfs-${kver}.img" "$kver" 2>>"$LOG" || true
+    fi
+done
+echo "$(date): initramfs regenerated" >> "$LOG"
 
 # Restore SELinux contexts
 echo "$(date): Restoring SELinux contexts" >> "$LOG"
@@ -631,12 +699,20 @@ install() {
     if [ -f /usr/share/plymouth/themes/bgrt/watermark.png ]; then
         inst_simple /usr/share/plymouth/themes/bgrt/watermark.png
     fi
+    # Install to tribar theme (shutdown/reboot)
+    if [ -f /usr/share/plymouth/themes/tribar/watermark.png ]; then
+        inst_simple /usr/share/plymouth/themes/tribar/watermark.png
+    fi
     # Install ArxisOS theme if available
     if [ -d /usr/share/plymouth/themes/arxisos ]; then
         inst_dir /usr/share/plymouth/themes/arxisos
         for f in /usr/share/plymouth/themes/arxisos/*; do
             [ -f "$f" ] && inst_simple "$f"
         done
+    fi
+    # Ensure Plymouth config is in initramfs
+    if [ -f /etc/plymouth/plymouthd.conf ]; then
+        inst_simple /etc/plymouth/plymouthd.conf
     fi
 }
 DRACUT_MODULE
@@ -754,6 +830,11 @@ if [[ -d "$BRANDING_DIR/grub/arxisos" ]]; then
     echo "  - Copying GRUB theme to rootfs..."
     sudo mkdir -p "$ROOTFS_DIR/boot/grub2/themes/arxisos"
     sudo cp -r "$BRANDING_DIR/grub/arxisos/"* "$ROOTFS_DIR/boot/grub2/themes/arxisos/"
+
+    # Also copy to /usr/share for installed system (first-boot will copy to /boot)
+    echo "  - Copying GRUB theme to /usr/share for installed system..."
+    sudo mkdir -p "$ROOTFS_DIR/usr/share/grub/themes/arxisos"
+    sudo cp -r "$BRANDING_DIR/grub/arxisos/"* "$ROOTFS_DIR/usr/share/grub/themes/arxisos/"
 
     # Generate GRUB fonts
     echo "  - Generating GRUB fonts..."
@@ -1047,6 +1128,12 @@ fi
 echo "  - Logos..."
 copy_if_exists "$BRANDING_DIR/logos" "$ROOTFS_DIR/usr/share/arxisos/logos"
 copy_if_exists "$BRANDING_DIR/logos/arxisos-logo.png" "$ROOTFS_DIR/usr/share/pixmaps/arxisos-logo.png"
+# Copy watermark specifically for Plymouth first-boot regeneration
+if [[ -f "$BRANDING_DIR/logos/arxisos-watermark-128.png" ]]; then
+    sudo cp "$BRANDING_DIR/logos/arxisos-watermark-128.png" "$ROOTFS_DIR/usr/share/pixmaps/arxisos-watermark-128.png"
+    sudo cp "$BRANDING_DIR/logos/arxisos-watermark-128.png" "$ROOTFS_DIR/usr/share/arxisos/logos/arxisos-watermark-128.png"
+    echo "    - Watermark 128x128 copied for Plymouth"
+fi
 
 echo "  - Icon themes..."
 if [[ -d "$BRANDING_DIR/icons/hicolor" ]]; then
