@@ -11,10 +11,13 @@ BRANDING_DIR="$BUILD_DIR/branding"
 PLASMA_CFG_DIR="$BUILD_DIR/PLASMA-CONFIGS"
 SKEL_DIR="$BUILD_DIR/Skel"
 WORK_DIR="/var/tmp/arxisos-composer-branding"
-ISO_LABEL="ArxisOS-1-0-x86_64"
+ISO_LABEL_DEFAULT="ArxisOS-1-0-x86_64"
 
 input_iso="${1:-}"
 output_iso="${2:-$BUILD_DIR/ArxisOS-1.0-x86_64.iso}"
+# Derive an ISO label that matches the output filename unless overridden
+ISO_LABEL="${ISO_LABEL:-$(basename "${output_iso%.iso}")}"
+[[ -z "$ISO_LABEL" ]] && ISO_LABEL="$ISO_LABEL_DEFAULT"
 
 if [[ -z "$input_iso" || ! -f "$input_iso" ]]; then
     echo "Usage: $0 <input-iso> [output-iso]"
@@ -149,8 +152,12 @@ sudo chroot "$ROOTFS_DIR" dnf install -y --releasever=43 --allowerasing \
     dbus-x11 xdg-desktop-portal-kde \
     grub2-efi-x64 grub2-efi-x64-modules shim-x64 \
     grub2-tools grub2-tools-extra efibootmgr grub2-common \
-    plymouth plymouth-system-theme plymouth-plugin-script \
-    dracut \
+    plymouth plymouth-system-theme plymouth-plugin-script plymouth-plugin-two-step \
+    dracut dracut-config-generic \
+    polkit polkit-kde upower udisks2 rtkit \
+    avahi avahi-tools switcheroo-control ModemManager \
+    dbus-broker systemd-oomd-defaults \
+    selinux-policy-targeted policycoreutils policycoreutils-python-utils \
     || echo "Warning: Some packages may have failed"
 
 echo "Removing GNOME packages..."
@@ -284,6 +291,21 @@ fi
 
 echo "$(date): Installed system detected, running cleanup" >> "$LOG"
 
+# Set hostname to localhost (avoid localhost-live carry-over)
+if command -v hostnamectl >/dev/null 2>&1; then
+    hostnamectl set-hostname localhost 2>>"$LOG" || echo "localhost" > /etc/hostname
+else
+    echo "localhost" > /etc/hostname
+fi
+
+# Ensure SELinux enforcing on installed system
+if [ -f /etc/selinux/config ]; then
+    sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
+    sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=targeted/' /etc/selinux/config
+    touch /.autorelabel
+    echo "$(date): SELinux set to enforcing" >> "$LOG"
+fi
+
 # Remove liveuser account
 if id liveuser &>/dev/null; then
     echo "$(date): Removing liveuser account" >> "$LOG"
@@ -362,6 +384,23 @@ fi
 # Regenerate GRUB config
 echo "$(date): Regenerating GRUB config" >> "$LOG"
 grub2-mkconfig -o /boot/grub2/grub.cfg 2>>"$LOG" || true
+if ! grep -q "set theme=.*arxisos" /boot/grub2/grub.cfg 2>/dev/null; then
+    tmpcfg=$(mktemp) || tmpcfg=/tmp/grub.cfg.arxisos
+    {
+        echo '# ArxisOS GRUB Theme'
+        echo 'insmod all_video'
+        echo 'insmod gfxterm'
+        echo 'insmod gfxmenu'
+        echo 'insmod png'
+        echo 'set gfxmode=auto'
+        echo 'terminal_output gfxterm'
+        echo 'set theme=($root)/boot/grub2/themes/arxisos/theme.txt'
+        echo ''
+        cat /boot/grub2/grub.cfg
+    } > "$tmpcfg"
+    mv "$tmpcfg" /boot/grub2/grub.cfg 2>>"$LOG" || true
+    echo "$(date): Injected theme into /boot/grub2/grub.cfg" >> "$LOG"
+fi
 
 # Regenerate GRUB for EFI (check multiple possible locations)
 if [ -d /boot/efi/EFI/fedora ]; then
@@ -372,6 +411,26 @@ if [ -d /boot/efi/EFI/arxisos ]; then
     grub2-mkconfig -o /boot/efi/EFI/arxisos/grub.cfg 2>>"$LOG" || true
     echo "$(date): EFI GRUB config updated (arxisos path)" >> "$LOG"
 fi
+for efigrub in /boot/efi/EFI/*/grub.cfg; do
+    [ -f "$efigrub" ] || continue
+    if ! grep -q "set theme=.*arxisos" "$efigrub" 2>/dev/null; then
+        tmpcfg=$(mktemp) || tmpcfg=/tmp/grub.cfg.arxisos.efi
+        {
+            echo '# ArxisOS GRUB Theme'
+            echo 'insmod all_video'
+            echo 'insmod gfxterm'
+            echo 'insmod gfxmenu'
+            echo 'insmod png'
+            echo 'set gfxmode=auto'
+            echo 'terminal_output gfxterm'
+            echo 'set theme=($root)/boot/grub2/themes/arxisos/theme.txt'
+            echo ''
+            cat "$efigrub"
+        } > "$tmpcfg"
+        mv "$tmpcfg" "$efigrub" 2>>"$LOG" || true
+        echo "$(date): Injected theme into $efigrub" >> "$LOG"
+    fi
+done
 
 # Ensure SDDM theme is configured
 echo "$(date): Configuring SDDM theme" >> "$LOG"
@@ -392,17 +451,33 @@ SessionDir=/usr/share/wayland-sessions
 SDDMCONF
 echo "$(date): SDDM config written" >> "$LOG"
 
-# Regenerate initramfs with Plymouth
+# Regenerate initramfs with Plymouth and ArxisOS branding
 echo "$(date): Regenerating initramfs with Plymouth" >> "$LOG"
+
+# Use spinner theme with ArxisOS watermark (more reliable than custom theme)
+if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+    plymouth-set-default-theme spinner 2>>"$LOG" || true
+    echo "$(date): Plymouth theme set to spinner" >> "$LOG"
+fi
+
+# Rebuild initramfs for current kernel
 KERNEL_VER=$(uname -r)
-if [ -n "$KERNEL_VER" ]; then
+if [ -n "$KERNEL_VER" ] && [ -f "/boot/vmlinuz-${KERNEL_VER}" ]; then
+    echo "$(date): Rebuilding initramfs for kernel $KERNEL_VER" >> "$LOG"
     dracut -f "/boot/initramfs-${KERNEL_VER}.img" "$KERNEL_VER" 2>>"$LOG" || true
     echo "$(date): initramfs regenerated for kernel $KERNEL_VER" >> "$LOG"
 else
     # Regenerate for all installed kernels
+    echo "$(date): Rebuilding initramfs for all kernels" >> "$LOG"
     dracut -f 2>>"$LOG" || true
     echo "$(date): initramfs regenerated for all kernels" >> "$LOG"
 fi
+
+# Restore SELinux contexts
+echo "$(date): Restoring SELinux contexts" >> "$LOG"
+restorecon -R /boot 2>>"$LOG" || true
+restorecon -R /var/lib/AccountsService 2>>"$LOG" || true
+restorecon -R /etc/sddm.conf.d 2>>"$LOG" || true
 
 echo "$(date): First-boot complete" >> "$LOG"
 FIRSTBOOT_SCRIPT
@@ -415,25 +490,6 @@ sudo mkdir -p "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants"
 sudo ln -sf /etc/systemd/system/arxisos-first-boot.service "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/arxisos-first-boot.service" 2>/dev/null || true
 
 # ============================================
-# UNMOUNT BIND MOUNTS (chroot operations done)
-# ============================================
-echo ""
-echo "Unmounting chroot bind mounts..."
-sync
-sudo umount -l "$ROOTFS_DIR/run" 2>/dev/null || true
-sudo umount -l "$ROOTFS_DIR/sys" 2>/dev/null || true
-sudo umount -l "$ROOTFS_DIR/proc" 2>/dev/null || true
-sudo umount -l "$ROOTFS_DIR/dev" 2>/dev/null || true
-sleep 1
-
-# Verify mounts released
-if mount | grep -q "$ROOTFS_DIR/dev"; then
-    echo "WARNING: /dev still mounted, forcing unmount..."
-    sudo fuser -km "$ROOTFS_DIR/dev" 2>/dev/null || true
-    sudo umount -f "$ROOTFS_DIR/dev" 2>/dev/null || true
-fi
-
-# ============================================
 # PLYMOUTH THEME
 # ============================================
 echo ""
@@ -444,7 +500,8 @@ if [[ -d "$BRANDING_DIR/plymouth/arxisos" ]]; then
     sudo mkdir -p "$ROOTFS_DIR/usr/share/plymouth/themes/arxisos"
     sudo cp -r "$BRANDING_DIR/plymouth/arxisos/"* "$ROOTFS_DIR/usr/share/plymouth/themes/arxisos/"
 
-    # Configure Plymouth
+    # Configure Plymouth - use spinner theme with ArxisOS watermark for reliability
+    # The arxisos theme uses two-step which may not work on all systems
     sudo mkdir -p "$ROOTFS_DIR/etc/plymouth"
     sudo tee "$ROOTFS_DIR/etc/plymouth/plymouthd.conf" >/dev/null <<'PLYCONF'
 [Daemon]
@@ -481,7 +538,7 @@ PLYCONF
 
     # Only replace if we have a valid watermark
     if [[ -n "$PLYMOUTH_LOGO" && -f "$PLYMOUTH_LOGO" ]]; then
-        # Replace in spinner theme
+        # Replace in spinner theme (boot)
         if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/spinner" ]]; then
             sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/spinner/watermark.png"
             echo "    - Replaced spinner watermark"
@@ -493,11 +550,47 @@ PLYCONF
             echo "    - Replaced bgrt watermark"
         fi
 
-        # Also replace the logo.png in arxisos theme (used during shutdown)
+        # Replace in hot theme (shutdown/reboot - the red/green arrows theme)
+        if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/hot" ]]; then
+            sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/hot/watermark.png"
+            # Also replace any logo files in hot theme
+            for logo_file in "$ROOTFS_DIR/usr/share/plymouth/themes/hot/"*logo*.png; do
+                [[ -f "$logo_file" ]] && sudo cp "$PLYMOUTH_LOGO" "$logo_file"
+            done
+            echo "    - Replaced hot theme watermark (shutdown/reboot)"
+        fi
+
+        # Replace in tribar theme (another shutdown theme variant)
+        if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/tribar" ]]; then
+            sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/tribar/watermark.png"
+            echo "    - Replaced tribar watermark"
+        fi
+
+        # Replace in text theme
+        if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/text" ]]; then
+            sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/text/watermark.png" 2>/dev/null || true
+        fi
+
+        # Also replace the logo.png in arxisos theme
         if [[ -d "$ROOTFS_DIR/usr/share/plymouth/themes/arxisos" ]]; then
             sudo cp "$PLYMOUTH_LOGO" "$ROOTFS_DIR/usr/share/plymouth/themes/arxisos/logo.png"
             echo "    - Replaced arxisos theme logo"
         fi
+
+        # Replace watermark in ALL Plymouth themes to be safe
+        echo "    - Replacing watermarks in all Plymouth themes..."
+        for theme_dir in "$ROOTFS_DIR/usr/share/plymouth/themes/"*/; do
+            [[ -d "$theme_dir" ]] || continue
+            theme_name=$(basename "$theme_dir")
+            # Replace watermark.png if it exists
+            if [[ -f "${theme_dir}watermark.png" ]]; then
+                sudo cp "$PLYMOUTH_LOGO" "${theme_dir}watermark.png"
+            fi
+            # Replace any file with 'logo' in the name
+            for logo_file in "${theme_dir}"*logo*.png "${theme_dir}"*Logo*.png; do
+                [[ -f "$logo_file" ]] && sudo cp "$PLYMOUTH_LOGO" "$logo_file"
+            done
+        done
     fi
 
     # Clean up temp file if we created one
@@ -513,11 +606,52 @@ PLYCONF
 add_dracutmodules+=" plymouth "
 DRACUTCONF
 
-    # Set Plymouth default theme
+    # Create dracut module to ensure ArxisOS branding is in initramfs
+    echo "  - Creating dracut module for ArxisOS plymouth branding"
+    sudo mkdir -p "$ROOTFS_DIR/usr/lib/dracut/modules.d/99arxisos-branding"
+    sudo tee "$ROOTFS_DIR/usr/lib/dracut/modules.d/99arxisos-branding/module-setup.sh" > /dev/null << 'DRACUT_MODULE'
+#!/bin/bash
+# ArxisOS Plymouth branding dracut module
+
+check() {
+    return 0
+}
+
+depends() {
+    echo plymouth
+    return 0
+}
+
+install() {
+    # Install ArxisOS watermark to spinner theme in initramfs
+    if [ -f /usr/share/plymouth/themes/spinner/watermark.png ]; then
+        inst_simple /usr/share/plymouth/themes/spinner/watermark.png
+    fi
+    # Install to bgrt theme as well
+    if [ -f /usr/share/plymouth/themes/bgrt/watermark.png ]; then
+        inst_simple /usr/share/plymouth/themes/bgrt/watermark.png
+    fi
+    # Install ArxisOS theme if available
+    if [ -d /usr/share/plymouth/themes/arxisos ]; then
+        inst_dir /usr/share/plymouth/themes/arxisos
+        for f in /usr/share/plymouth/themes/arxisos/*; do
+            [ -f "$f" ] && inst_simple "$f"
+        done
+    fi
+}
+DRACUT_MODULE
+    sudo chmod +x "$ROOTFS_DIR/usr/lib/dracut/modules.d/99arxisos-branding/module-setup.sh"
+
+    # Create dracut configuration to always include the branding module
+    sudo tee "$ROOTFS_DIR/etc/dracut.conf.d/arxisos-branding.conf" > /dev/null << 'DRACUT_CONF'
+# ArxisOS branding - include plymouth watermarks in initramfs
+add_dracutmodules+=" arxisos-branding "
+DRACUT_CONF
+
+    # Set Plymouth default theme to spinner (with ArxisOS watermark)
     if [[ -f "$ROOTFS_DIR/usr/sbin/plymouth-set-default-theme" ]]; then
-        # Create symlink for default theme
-        sudo mkdir -p "$ROOTFS_DIR/etc/alternatives"
         sudo ln -sf /usr/share/plymouth/themes/spinner/spinner.plymouth "$ROOTFS_DIR/etc/alternatives/default.plymouth" 2>/dev/null || true
+        sudo chroot "$ROOTFS_DIR" plymouth-set-default-theme spinner 2>/dev/null || true
     fi
 fi
 
@@ -587,7 +721,7 @@ if [[ -f "$INITRD_PATH" ]]; then
             echo "  - WARNING: No valid watermark available for initrd"
         fi
 
-        # Update Plymouth config in initrd
+        # Update Plymouth config in initrd - use spinner with ArxisOS watermark
         sudo mkdir -p "$INITRD_WORK/etc/plymouth"
         sudo tee "$INITRD_WORK/etc/plymouth/plymouthd.conf" > /dev/null << 'PLYCONF_INITRD'
 [Daemon]
@@ -730,10 +864,10 @@ if [[ -f "$WORK_DIR/new_iso/EFI/BOOT/grub.cfg" ]]; then
         -e "s/--class fedora/--class arxisos/g" \
         "$WORK_DIR/new_iso/EFI/BOOT/grub.cfg"
 
-    # Add selinux=0 and rhgb quiet to kernel parameters for boot splash
+    # Add permissive SELinux for live boot plus splash flags
     sudo sed -i \
-        -e '/^\s*linux/s/$/ selinux=0 rhgb quiet/' \
-        -e '/^\s*linuxefi/s/$/ selinux=0 rhgb quiet/' \
+        -e '/^\s*linux/s/$/ selinux=1 enforcing=0 rhgb quiet/' \
+        -e '/^\s*linuxefi/s/$/ selinux=1 enforcing=0 rhgb quiet/' \
         "$WORK_DIR/new_iso/EFI/BOOT/grub.cfg"
 
     # Add theme configuration
@@ -767,10 +901,10 @@ if [[ -f "$WORK_DIR/new_iso/boot/grub2/grub.cfg" ]]; then
         -e "s/--class fedora/--class arxisos/g" \
         "$WORK_DIR/new_iso/boot/grub2/grub.cfg"
 
-    # Add selinux=0 and rhgb quiet for boot splash
+    # Add permissive SELinux for live boot plus splash flags
     sudo sed -i \
-        -e '/^\s*linux/s/$/ selinux=0 rhgb quiet/' \
-        -e '/^\s*linuxefi/s/$/ selinux=0 rhgb quiet/' \
+        -e '/^\s*linux/s/$/ selinux=1 enforcing=0 rhgb quiet/' \
+        -e '/^\s*linuxefi/s/$/ selinux=1 enforcing=0 rhgb quiet/' \
         "$WORK_DIR/new_iso/boot/grub2/grub.cfg"
 
     if ! grep -q "set theme=" "$WORK_DIR/new_iso/boot/grub2/grub.cfg"; then
@@ -846,7 +980,69 @@ if [[ -d "$BRANDING_DIR/wallpapers/ArxisOS" ]]; then
     sudo cp -r "$BRANDING_DIR/wallpapers/ArxisOS/"* "$ROOTFS_DIR/usr/share/wallpapers/ArxisOS/"
 fi
 # Also copy standalone wallpapers for compatibility
+copy_if_exists "$BRANDING_DIR/wallpapers/default.png" "$ROOTFS_DIR/usr/share/wallpapers/default.png"
 copy_if_exists "$BRANDING_DIR/wallpapers/default.png" "$ROOTFS_DIR/usr/share/wallpapers/ArxisOS.png"
+
+# CRITICAL: Replace F43 wallpaper (Fedora 43 default) with ArxisOS wallpaper
+# Plasma 6 uses /usr/share/wallpapers/F43 as the default, ignoring our config
+echo "  - Replacing F43 default wallpaper with ArxisOS..."
+if [[ -d "$ROOTFS_DIR/usr/share/wallpapers/F43" ]]; then
+    ARXIS_WALLPAPER=""
+    if [[ -f "$BRANDING_DIR/wallpapers/ArxisOS/contents/images/3840x2160.png" ]]; then
+        ARXIS_WALLPAPER="$BRANDING_DIR/wallpapers/ArxisOS/contents/images/3840x2160.png"
+    elif [[ -f "$BRANDING_DIR/wallpapers/default.png" ]]; then
+        ARXIS_WALLPAPER="$BRANDING_DIR/wallpapers/default.png"
+    fi
+
+    if [[ -n "$ARXIS_WALLPAPER" ]]; then
+        # Replace all F43 wallpaper images with ArxisOS wallpaper
+        F43_IMAGES_DIR="$ROOTFS_DIR/usr/share/wallpapers/F43/contents/images"
+        if [[ -d "$F43_IMAGES_DIR" ]]; then
+            # Get list of resolutions from existing F43 wallpapers
+            for img in "$F43_IMAGES_DIR"/*.jxl "$F43_IMAGES_DIR"/*.png "$F43_IMAGES_DIR"/*.jpg; do
+                [[ -f "$img" ]] || continue
+                filename=$(basename "$img")
+                # Extract resolution from filename (e.g., 1920x1080.jxl -> 1920x1080)
+                resolution="${filename%.*}"
+
+                # Convert ArxisOS wallpaper to this resolution and replace
+                if command -v magick &>/dev/null; then
+                    sudo magick "$ARXIS_WALLPAPER" -resize "${resolution}!" "${img%.*}.png" 2>/dev/null || true
+                    # Remove the original jxl file
+                    [[ "$img" == *.jxl ]] && sudo rm -f "$img"
+                elif command -v convert &>/dev/null; then
+                    sudo convert "$ARXIS_WALLPAPER" -resize "${resolution}!" "${img%.*}.png" 2>/dev/null || true
+                    [[ "$img" == *.jxl ]] && sudo rm -f "$img"
+                else
+                    # No ImageMagick, just copy the original to replace
+                    sudo cp "$ARXIS_WALLPAPER" "${img%.*}.png" 2>/dev/null || true
+                    [[ "$img" == *.jxl ]] && sudo rm -f "$img"
+                fi
+            done
+            echo "    F43 wallpaper images replaced with ArxisOS"
+        fi
+
+        # Update F43 metadata to show ArxisOS branding
+        if [[ -f "$ROOTFS_DIR/usr/share/wallpapers/F43/metadata.json" ]]; then
+            sudo tee "$ROOTFS_DIR/usr/share/wallpapers/F43/metadata.json" > /dev/null << 'F43_META'
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "contact@arxisos.com",
+                "Name": "ArxisOS Team"
+            }
+        ],
+        "Id": "F43",
+        "License": "CC-BY-SA-4.0",
+        "Name": "ArxisOS",
+        "Description": "ArxisOS default wallpaper"
+    }
+}
+F43_META
+        fi
+    fi
+fi
 
 echo "  - Logos..."
 copy_if_exists "$BRANDING_DIR/logos" "$ROOTFS_DIR/usr/share/arxisos/logos"
@@ -877,10 +1073,19 @@ echo "  - Plasma desktop theme (PurPurDay)..."
 copy_if_exists "$BRANDING_DIR/plasma-themes/PurPurDay-Plasma" "$ROOTFS_DIR/usr/share/plasma/desktoptheme/PurPurDay-Plasma"
 
 echo "  - Color scheme..."
-# Copy PurPurDay color scheme from Plasma theme
-if [[ -f "$BRANDING_DIR/plasma-themes/PurPurDay-Plasma/colors" ]]; then
+# Prefer explicit colour scheme assets
+if [[ -f "$BRANDING_DIR/colourscheme/PurPurDayColor.colors" ]]; then
+    sudo mkdir -p "$ROOTFS_DIR/usr/share/color-schemes"
+    sudo cp "$BRANDING_DIR/colourscheme/PurPurDayColor.colors" "$ROOTFS_DIR/usr/share/color-schemes/PurPurDayColor.colors"
+elif [[ -f "$BRANDING_DIR/plasma-themes/PurPurDay-Plasma/colors" ]]; then
     sudo mkdir -p "$ROOTFS_DIR/usr/share/color-schemes"
     sudo cp "$BRANDING_DIR/plasma-themes/PurPurDay-Plasma/colors" "$ROOTFS_DIR/usr/share/color-schemes/PurPurDayColor.colors"
+fi
+
+echo "  - Konsole color scheme..."
+if [[ -f "$BRANDING_DIR/colourscheme/PurPurDayBlur-Konsole.colorscheme" ]]; then
+    sudo mkdir -p "$ROOTFS_DIR/usr/share/konsole"
+    sudo cp "$BRANDING_DIR/colourscheme/PurPurDayBlur-Konsole.colorscheme" "$ROOTFS_DIR/usr/share/konsole/PurPurDayBlur-Konsole.colorscheme"
 fi
 
 echo "  - Aurorae window decoration (PurPurDay)..."
@@ -901,6 +1106,8 @@ if [[ -f "$BRANDING_DIR/start.svg" ]]; then
     sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps/start-here.svg"
     sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps/distributor-logo.svg"
     sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps/arxisos-start.svg"
+    sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps/start-here-kde.svg"
+    sudo cp "$BRANDING_DIR/start.svg" "$ROOTFS_DIR/usr/share/icons/hicolor/scalable/apps/start-here-kde-panel.svg"
 
     # Generate PNG versions from start.svg for different sizes
     if command -v convert &> /dev/null || command -v magick &> /dev/null; then
@@ -914,6 +1121,8 @@ if [[ -f "$BRANDING_DIR/start.svg" ]]; then
             sudo $CONVERT_CMD -background none "$BRANDING_DIR/start.svg" -resize ${size}x${size} "$ICON_DIR/start-here.png" 2>/dev/null || true
             sudo cp "$ICON_DIR/start-here.png" "$ICON_DIR/distributor-logo.png" 2>/dev/null || true
             sudo cp "$ICON_DIR/start-here.png" "$ICON_DIR/arxisos-start.png" 2>/dev/null || true
+            sudo cp "$ICON_DIR/start-here.png" "$ICON_DIR/start-here-kde.png" 2>/dev/null || true
+            sudo cp "$ICON_DIR/start-here.png" "$ICON_DIR/start-here-kde-panel.png" 2>/dev/null || true
         done
     fi
 
@@ -988,6 +1197,9 @@ widgetStyle=breeze
 
 [Icons]
 Theme=Magna-Glassy-Light-Icons
+
+[General]
+ColorScheme=PurPurDayColor
 KDEGLOBALS
 
 # kcminputrc - Cursor theme
@@ -1021,9 +1233,11 @@ Theme=PurPurDay-Splash-6
 Engine=KSplashQML
 KSPLASH
 
-# Create minimal desktop wallpaper config (desktop containment only, NOT panel)
-# This sets the ArxisOS wallpaper without affecting panel creation
+# Create desktop wallpaper config for Plasma 6
+# Use multiple approaches to ensure wallpaper is applied
 echo "  - Setting ArxisOS wallpaper as default..."
+
+# Method 1: Desktop containment config
 sudo tee "$ROOTFS_DIR/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc" > /dev/null << 'PLASMADESKTOP'
 [Containments][1]
 activityId=
@@ -1035,9 +1249,58 @@ plugin=org.kde.plasma.folder
 wallpaperplugin=org.kde.image
 
 [Containments][1][Wallpaper][org.kde.image][General]
-Image=file:///usr/share/wallpapers/ArxisOS/contents/images/3840x2160.png
-PreviewImage=file:///usr/share/wallpapers/ArxisOS/contents/images/3840x2160.png
+Image=/usr/share/wallpapers/ArxisOS/
+PreviewImage=/usr/share/wallpapers/ArxisOS/contents/images/3840x2160.png
+SlidePaths=/usr/share/wallpapers/
 PLASMADESKTOP
+
+# Method 2: Set default wallpaper via Plasma shell defaults (critical for Plasma 6)
+# Handle case where 'defaults' might be a file instead of directory
+PLASMA_DEFAULTS_PATH="$ROOTFS_DIR/usr/share/plasma/shells/org.kde.plasma.desktop/contents/defaults"
+if [[ -f "$PLASMA_DEFAULTS_PATH" ]]; then
+    # 'defaults' is a file, append wallpaper config to it
+    if ! grep -q "defaultWallpaperTheme" "$PLASMA_DEFAULTS_PATH" 2>/dev/null; then
+        sudo tee -a "$PLASMA_DEFAULTS_PATH" > /dev/null << 'PLASMA_DEFAULTS'
+
+[Wallpaper]
+defaultFilePath=/usr/share/wallpapers/ArxisOS/contents/images/3840x2160.png
+defaultWallpaperTheme=ArxisOS
+PLASMA_DEFAULTS
+    fi
+elif [[ -d "$PLASMA_DEFAULTS_PATH" ]]; then
+    # 'defaults' is a directory, create file inside it
+    sudo tee "$PLASMA_DEFAULTS_PATH/wallpaper" > /dev/null << 'PLASMA_DEFAULTS'
+[Wallpaper]
+defaultFilePath=/usr/share/wallpapers/ArxisOS/contents/images/3840x2160.png
+defaultWallpaperTheme=ArxisOS
+PLASMA_DEFAULTS
+else
+    # Neither exists, create the file
+    sudo mkdir -p "$(dirname "$PLASMA_DEFAULTS_PATH")"
+    sudo tee "$PLASMA_DEFAULTS_PATH" > /dev/null << 'PLASMA_DEFAULTS'
+[Wallpaper]
+defaultFilePath=/usr/share/wallpapers/ArxisOS/contents/images/3840x2160.png
+defaultWallpaperTheme=ArxisOS
+PLASMA_DEFAULTS
+fi
+
+# Method 3: Create system-wide plasmarc with wallpaper defaults
+sudo mkdir -p "$ROOTFS_DIR/etc/xdg"
+sudo tee "$ROOTFS_DIR/etc/xdg/plasmarc" > /dev/null << 'PLASMARC_DEFAULT'
+[Theme]
+name=default
+
+[Wallpapers]
+defaultWallpaperTheme=ArxisOS
+defaultFileSuffix=.png
+defaultWidth=3840
+defaultHeight=2160
+PLASMARC_DEFAULT
+
+# Create a symlink to make ArxisOS the "Next" wallpaper (Plasma 6 fallback)
+if [[ -d "$ROOTFS_DIR/usr/share/wallpapers/ArxisOS" ]]; then
+    sudo ln -sf ArxisOS "$ROOTFS_DIR/usr/share/wallpapers/Next" 2>/dev/null || true
+fi
 
 # Copy configs to liveuser
 if [[ -d "$ROOTFS_DIR/home/liveuser" ]]; then
@@ -1049,6 +1312,7 @@ if [[ -d "$ROOTFS_DIR/home/liveuser" ]]; then
     sudo cp "$ROOTFS_DIR/etc/skel/.config/kwinrc" "$ROOTFS_DIR/home/liveuser/.config/"
     sudo cp "$ROOTFS_DIR/etc/skel/.config/ksplashrc" "$ROOTFS_DIR/home/liveuser/.config/"
     sudo cp "$ROOTFS_DIR/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc" "$ROOTFS_DIR/home/liveuser/.config/"
+    sudo cp "$ROOTFS_DIR/etc/skel/.config/konsolerc" "$ROOTFS_DIR/home/liveuser/.config/" 2>/dev/null || true
 
     # Copy GTK configs too
     [[ -d "$ROOTFS_DIR/etc/skel/.config/gtk-3.0" ]] && sudo cp -r "$ROOTFS_DIR/etc/skel/.config/gtk-3.0" "$ROOTFS_DIR/home/liveuser/.config/"
@@ -1056,6 +1320,10 @@ if [[ -d "$ROOTFS_DIR/home/liveuser" ]]; then
 
     # Copy .dmrc for session selection
     [[ -f "$ROOTFS_DIR/etc/skel/.dmrc" ]] && sudo cp "$ROOTFS_DIR/etc/skel/.dmrc" "$ROOTFS_DIR/home/liveuser/"
+
+    # Copy Konsole profile
+    sudo mkdir -p "$ROOTFS_DIR/home/liveuser/.local/share/konsole"
+    [[ -f "$ROOTFS_DIR/etc/skel/.local/share/konsole/ArxisOS.profile" ]] && sudo cp "$ROOTFS_DIR/etc/skel/.local/share/konsole/ArxisOS.profile" "$ROOTFS_DIR/home/liveuser/.local/share/konsole/"
 
     sudo chown -R 1000:1000 "$ROOTFS_DIR/home/liveuser" 2>/dev/null || true
 fi
@@ -1065,6 +1333,27 @@ echo "  - Theme configs created (Plasma style, icons, cursors, decoration, splas
 # NOTE: Removed autostart layout application - it was breaking the working panel setup
 # The panel is already configured correctly via Plasma defaults + skel configs
 echo "  - Panel configured via Plasma defaults (no autostart override needed)"
+
+# Konsole profile with ArxisOS colors
+sudo mkdir -p "$ROOTFS_DIR/etc/skel/.local/share/konsole"
+sudo tee "$ROOTFS_DIR/etc/skel/.local/share/konsole/ArxisOS.profile" >/dev/null <<'KONSOLE_PROFILE'
+[Appearance]
+ColorScheme=PurPurDayBlur-Konsole
+Opacity=1
+
+[General]
+Name=ArxisOS
+Parent=FALLBACK/
+KONSOLE_PROFILE
+
+sudo mkdir -p "$ROOTFS_DIR/etc/skel/.config"
+sudo tee "$ROOTFS_DIR/etc/skel/.config/konsolerc" >/dev/null <<'KONSOLE_RC'
+[Favorite Profiles]
+Favorites=ArxisOS.profile
+
+[General]
+DefaultProfile=ArxisOS.profile
+KONSOLE_RC
 
 # ============================================
 # SESSION AND DESKTOP HINTS
@@ -1200,22 +1489,71 @@ EOF
 sudo mkdir -p "$ROOTFS_DIR/etc/dnf/vars"
 echo "43" | sudo tee "$ROOTFS_DIR/etc/dnf/vars/releasever" > /dev/null
 
+# Default hostname (installed system should not keep localhost-live)
+echo "localhost" | sudo tee "$ROOTFS_DIR/etc/hostname" >/dev/null
+
 # ============================================
-# DISABLE SELINUX
+# SELINUX MODE
 # ============================================
-echo "  - Disabling SELinux..."
+echo ""
+echo "=== Configuring SELinux ==="
+# Keep installed system enforcing, live permissive via kernel args (above)
 if [[ -f "$ROOTFS_DIR/etc/selinux/config" ]]; then
-    sudo sed -i 's/^SELINUX=enforcing/SELINUX=disabled/' "$ROOTFS_DIR/etc/selinux/config"
-    sudo sed -i 's/^SELINUX=permissive/SELINUX=disabled/' "$ROOTFS_DIR/etc/selinux/config"
+    sudo sed -i 's/^SELINUX=.*/SELINUX=enforcing/' "$ROOTFS_DIR/etc/selinux/config"
+    sudo sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=targeted/' "$ROOTFS_DIR/etc/selinux/config"
 fi
+# Remove relabel marker so live boot doesn't autorelabel; installed system will set this on first boot
 sudo rm -f "$ROOTFS_DIR/.autorelabel"
+
+# Pre-label key branding paths to minimize live issues
+echo "  - Restoring SELinux contexts on branding files..."
+if [[ -x "$ROOTFS_DIR/usr/sbin/restorecon" ]]; then
+    sudo chroot "$ROOTFS_DIR" restorecon -R /usr/share/plymouth 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /usr/share/icons 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /usr/share/sddm 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /usr/share/wallpapers 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /usr/share/themes 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /usr/share/color-schemes 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /usr/share/aurorae 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /usr/share/plasma 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /boot 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /etc 2>/dev/null || true
+    sudo chroot "$ROOTFS_DIR" restorecon -R /home/liveuser 2>/dev/null || true
+fi
 
 # ============================================
 # UPDATE ICON CACHES
 # ============================================
 echo ""
 echo "=== Updating Icon Caches ==="
-# Note: Can't chroot here as bind mounts are gone, but icons will cache on first boot
+if [[ -x "$ROOTFS_DIR/usr/bin/gtk-update-icon-cache" ]]; then
+    sudo chroot "$ROOTFS_DIR" gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
+    if [[ -d "$ROOTFS_DIR/usr/share/icons/Magna-Glassy-Light-Icons" ]]; then
+        sudo chroot "$ROOTFS_DIR" gtk-update-icon-cache -f /usr/share/icons/Magna-Glassy-Light-Icons 2>/dev/null || true
+    fi
+fi
+if [[ -x "$ROOTFS_DIR/usr/bin/kbuildsycoca6" ]]; then
+    sudo chroot "$ROOTFS_DIR" kbuildsycoca6 --noincremental 2>/dev/null || true
+fi
+
+# ============================================
+# UNMOUNT BIND MOUNTS (chroot operations done)
+# ============================================
+echo ""
+echo "Unmounting chroot bind mounts..."
+sync
+sudo umount -l "$ROOTFS_DIR/run" 2>/dev/null || true
+sudo umount -l "$ROOTFS_DIR/sys" 2>/dev/null || true
+sudo umount -l "$ROOTFS_DIR/proc" 2>/dev/null || true
+sudo umount -l "$ROOTFS_DIR/dev" 2>/dev/null || true
+sleep 1
+
+# Verify mounts released
+if mount | grep -q "$ROOTFS_DIR/dev"; then
+    echo "WARNING: /dev still mounted, forcing unmount..."
+    sudo fuser -km "$ROOTFS_DIR/dev" 2>/dev/null || true
+    sudo umount -f "$ROOTFS_DIR/dev" 2>/dev/null || true
+fi
 
 # ============================================
 # REPACK SQUASHFS
@@ -1241,7 +1579,7 @@ if [[ -f "$WORK_DIR/new_iso/.discinfo" ]]; then
     echo "Updating .discinfo..."
     sudo tee "$WORK_DIR/new_iso/.discinfo" > /dev/null << DISCINFO_EOF
 $(date +%s.%N)
-ArxisOS 1.0
+$ISO_LABEL
 x86_64
 DISCINFO_EOF
 fi

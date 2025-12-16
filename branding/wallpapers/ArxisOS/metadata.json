@@ -10,5 +10,6 @@
         "License": "CC-BY-SA-4.0",
         "Name": "ArxisOS Corporate",
         "Description": "ArxisOS default corporate wallpaper"
-    }
+    },
+    "X-KDE-PlasmaImageWallpaper-AccentColor": "#81D4FA"
 }

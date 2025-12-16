@@ -4,7 +4,9 @@ set -euo pipefail
 BUILD_DIR="/home/bheffernan/arxisos-build"
 BLUEPRINT="arxisos-kde"
 IMAGE_TYPE="workstation-live-installer"
-VERSION="1.0"
+# Derive version from blueprint to keep messaging in sync
+VERSION=$(grep -m1 '^version =' "$BUILD_DIR/blueprints/arxisos-kde.toml" 2>/dev/null | sed 's/.*"\\(.*\\)"/\\1/')
+VERSION="${VERSION:-1.0}"
 
 echo "=== ArxisOS Build Script (osbuild-composer) ==="
 echo "Building ArxisOS $VERSION"

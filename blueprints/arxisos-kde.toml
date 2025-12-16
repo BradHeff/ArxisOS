@@ -272,6 +272,77 @@ version = "*"
 name = "plymouth-plugin-script"
 version = "*"
 
+[[packages]]
+name = "plymouth-plugin-two-step"
+version = "*"
+
+# System services - CRITICAL for desktop functionality
+[[packages]]
+name = "polkit"
+version = "*"
+
+[[packages]]
+name = "polkit-kde"
+version = "*"
+
+[[packages]]
+name = "upower"
+version = "*"
+
+[[packages]]
+name = "udisks2"
+version = "*"
+
+[[packages]]
+name = "rtkit"
+version = "*"
+
+[[packages]]
+name = "avahi"
+version = "*"
+
+[[packages]]
+name = "avahi-tools"
+version = "*"
+
+[[packages]]
+name = "switcheroo-control"
+version = "*"
+
+[[packages]]
+name = "ModemManager"
+version = "*"
+
+[[packages]]
+name = "dbus-broker"
+version = "*"
+
+[[packages]]
+name = "systemd-oomd-defaults"
+version = "*"
+
+# SELinux - Required for proper system operation
+[[packages]]
+name = "selinux-policy-targeted"
+version = "*"
+
+[[packages]]
+name = "policycoreutils"
+version = "*"
+
+[[packages]]
+name = "policycoreutils-python-utils"
+version = "*"
+
+# Dracut for initramfs
+[[packages]]
+name = "dracut"
+version = "*"
+
+[[packages]]
+name = "dracut-config-generic"
+version = "*"
+
 # Bootloader - CRITICAL for Anaconda to install GRUB on target system
 [[packages]]
 name = "grub2-efi-x64"
