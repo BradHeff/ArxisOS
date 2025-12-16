@@ -300,12 +300,17 @@ else
     echo "localhost" > /etc/hostname
 fi
 
-# Ensure SELinux enforcing on installed system
+# SELinux Configuration for installed system
+# Keep permissive for first boot to allow services to start properly
+# The system needs to complete a full SELinux relabel before enforcing
 if [ -f /etc/selinux/config ]; then
-    sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
+    # Keep permissive - this allows all services to start without SELinux denials
+    # User can manually enable enforcing later if desired
+    sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
     sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=targeted/' /etc/selinux/config
+    # Trigger a full relabel on next boot to fix all SELinux contexts
     touch /.autorelabel
-    echo "$(date): SELinux set to enforcing" >> "$LOG"
+    echo "$(date): SELinux set to permissive with relabel scheduled" >> "$LOG"
 fi
 
 # Remove liveuser account
@@ -1584,9 +1589,10 @@ echo "localhost" | sudo tee "$ROOTFS_DIR/etc/hostname" >/dev/null
 # ============================================
 echo ""
 echo "=== Configuring SELinux ==="
-# Keep installed system enforcing, live permissive via kernel args (above)
+# Set SELinux to permissive initially - this prevents service failures on first boot
+# The first-boot script will schedule a relabel; user can enable enforcing after system is stable
 if [[ -f "$ROOTFS_DIR/etc/selinux/config" ]]; then
-    sudo sed -i 's/^SELINUX=.*/SELINUX=enforcing/' "$ROOTFS_DIR/etc/selinux/config"
+    sudo sed -i 's/^SELINUX=.*/SELINUX=permissive/' "$ROOTFS_DIR/etc/selinux/config"
     sudo sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=targeted/' "$ROOTFS_DIR/etc/selinux/config"
 fi
 # Remove relabel marker so live boot doesn't autorelabel; installed system will set this on first boot
